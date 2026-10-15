@@ -117,7 +117,7 @@ jobs:
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: GeneralsXZH-unsigned-ipa-staticstride
+          name: GeneralsXZH-unsigned-ipa-lansweep
           path: build/ios-package/GeneralsXZH-unsigned.ipa
           if-no-files-found: error
           retention-days: 14

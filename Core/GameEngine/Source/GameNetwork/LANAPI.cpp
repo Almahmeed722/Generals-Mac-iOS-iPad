@@ -23,6 +23,9 @@
 ////////////////////////////////////////////////////////////////////////////////
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #define WIN32_LEAN_AND_MEAN  // only bare bones windows stuff wanted
 
@@ -200,6 +203,26 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 	}
 	else
 	{
+#if defined(__APPLE__) && TARGET_OS_IPHONE
+		// iOS refuses UDP broadcast without Apple's multicast entitlement, so LAN discovery never
+		// leaves the device. Also send the message directly to every host of the local /24 so
+		// other iPhones/iPads on the same Wi-Fi can still see lobby/game announcements.
+		if (m_localIP != 0)
+		{
+			const UnsignedInt subnet = m_localIP & 0xFFFFFF00u;
+			for (UnsignedInt host = 1; host < 255; ++host)
+			{
+				const UnsignedInt dst = subnet | host;
+				if (dst == m_localIP)
+					continue;
+				if (!m_transport->queueSend(dst, lobbyPort, (unsigned char *)msg, sizeof(LANMessage)))
+				{
+					m_transport->doSend(); // queue full: flush, then retry once
+					m_transport->queueSend(dst, lobbyPort, (unsigned char *)msg, sizeof(LANMessage));
+				}
+			}
+		}
+#endif
 		m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);
 	}
 }
