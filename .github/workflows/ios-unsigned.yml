@@ -22,7 +22,7 @@ jobs:
           submodules: false
 
       - name: Init DXVK fork submodule
-        run: git submodule update --init --depth 1 references/fbraz3-dxvk
+        run: git submodule update --init --recursive --depth 1 references/fbraz3-dxvk
 
       - name: Setup vcpkg (full clone; shallow clones break manifest baselines)
         run: |
