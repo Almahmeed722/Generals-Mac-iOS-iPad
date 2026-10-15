@@ -207,7 +207,23 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 		// iOS refuses UDP broadcast without Apple's multicast entitlement, so LAN discovery never
 		// leaves the device. Also send the message directly to every host of the local /24 so
 		// other iPhones/iPads on the same Wi-Fi can still see lobby/game announcements.
-		if (m_localIP != 0)
+		const bool isDiscovery =
+			msg->messageType == LANMessage::MSG_REQUEST_LOCATIONS ||
+			msg->messageType == LANMessage::MSG_GAME_ANNOUNCE ||
+			msg->messageType == LANMessage::MSG_LOBBY_ANNOUNCE;
+		if (!isDiscovery && m_currentGame != nullptr)
+		{
+			// Inside a game lobby: send start/timer/options/accept/chat only to the humans in the game,
+			// not to the whole subnet (a 253-packet flood lags the sender and drops the start message).
+			Int localSlot = m_currentGame->getLocalSlotNum();
+			for (Int i = 0; i < MAX_SLOTS; ++i)
+			{
+				GameSlot *slot = m_currentGame->getSlot(i);
+				if (i != localSlot && slot != nullptr && slot->isHuman() && slot->getIP() != 0)
+					m_transport->queueSend(slot->getIP(), lobbyPort, (unsigned char *)msg, sizeof(LANMessage));
+			}
+		}
+		else if (m_localIP != 0)
 		{
 			const UnsignedInt subnet = m_localIP & 0xFFFFFF00u;
 			for (UnsignedInt host = 1; host < 255; ++host)
