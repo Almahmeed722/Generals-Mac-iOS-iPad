@@ -139,6 +139,8 @@ FILE *g_UT_commaLog=nullptr;
 extern void externalAddTree(Coord3D location, Real scale, Real angle, AsciiString name);
 #endif
 
+static bool g_gxDiagFrame = false; // multiplayer desync diagnostics
+
 
 
 
@@ -3808,7 +3810,25 @@ void GameLogic::update()
 
 	if (generateForSolo || generateForMP)
 	{
+		g_gxDiagFrame = generateForMP;
 		m_CRC = getCRC( CRC_RECALC );
+		if (generateForMP)
+		{
+			fprintf(stderr, "[GX-DIAG] frame=%d CRC=%08X objs=%d seed=%u
+", (int)m_frame, m_CRC, 0, (unsigned)GetGameLogicRandomSeedCRC());
+			if (m_frame <= 1000)
+			{
+				for (Object *dobj = m_objList; dobj; dobj = dobj->getNextObject())
+				{
+					XferCRC dx; dx.open("diagCRC"); dx.xferSnapshot(dobj); dx.close();
+					const Coord3D *dp = dobj->getPosition();
+					fprintf(stderr, "[GX-OBJ] f=%d id=%d crc=%08X tpl=%s pos=%.4f,%.4f,%.4f
+", (int)m_frame, (int)dobj->getID(), dx.getCRC(),
+						dobj->getTemplate() ? dobj->getTemplate()->getName().str() : "?", dp->x, dp->y, dp->z);
+				}
+			}
+		}
+		g_gxDiagFrame = false;
 		bool isPlayback = (TheRecorder && TheRecorder->isPlaybackMode());
 
 		GameMessage *msg = newInstance(GameMessage)(GameMessage::MSG_LOGIC_CRC);
@@ -4238,6 +4258,8 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	if (isInGameLogicUpdate())
 	{
 		CRCGEN_LOG(("CRC after objects for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
+		if (g_gxDiagFrame) fprintf(stderr, "[GX-SEC] f=%d objects=%08X
+", (int)m_frame, xferCRC->getCRC());
 	}
 
 	if (isInGameLogicUpdate())
@@ -4254,6 +4276,8 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	if (isInGameLogicUpdate())
 	{
 		CRCGEN_LOG(("CRC after partition manager for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
+		if (g_gxDiagFrame) fprintf(stderr, "[GX-SEC] f=%d partition=%08X
+", (int)m_frame, xferCRC->getCRC());
 	}
 
 #ifdef DEBUG_CRC
@@ -4276,6 +4300,8 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	if (isInGameLogicUpdate())
 	{
 		CRCGEN_LOG(("CRC after PlayerList for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
+		if (g_gxDiagFrame) fprintf(stderr, "[GX-SEC] f=%d players=%08X
+", (int)m_frame, xferCRC->getCRC());
 	}
 
 	marker = "MARKER:TheAI";
@@ -4284,6 +4310,8 @@ UnsignedInt GameLogic::getCRC( Int mode, AsciiString deepCRCFileName )
 	if (isInGameLogicUpdate())
 	{
 		CRCGEN_LOG(("CRC after AI for frame %d is 0x%8.8X", m_frame, xferCRC->getCRC()));
+		if (g_gxDiagFrame) fprintf(stderr, "[GX-SEC] f=%d ai=%08X
+", (int)m_frame, xferCRC->getCRC());
 	}
 
 	if (xferCRC->getXferMode() == XFER_SAVE)
