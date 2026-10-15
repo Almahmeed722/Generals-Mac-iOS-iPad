@@ -24,10 +24,11 @@ jobs:
       - name: Init DXVK fork submodule
         run: git submodule update --init --depth 1 references/fbraz3-dxvk
 
-      - name: Setup vcpkg
-        uses: lukka/run-vcpkg@v11
-        with:
-          vcpkgGitCommitId: 'ffc071e0c08432c60c9b64f00334c0227667931b'
+      - name: Setup vcpkg (full clone; shallow clones break manifest baselines)
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$HOME/vcpkg"
+          "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
 
       - name: Install build tools
         run: |
