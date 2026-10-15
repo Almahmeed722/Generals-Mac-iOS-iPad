@@ -394,6 +394,15 @@ void LANAPI::update()
 			}
 
 			LANMessage *msg = (LANMessage *)(m_transport->m_inBuffer[i].data);
+#if defined(__APPLE__)
+			{
+				static int s_rxLog = 0;
+				if (s_rxLog++ < 400)
+					fprintf(stderr, "[GX-LAN] rx type=%d from %u.%u.%u.%u\n", (int)msg->messageType,
+						(unsigned)((senderIP >> 24) & 0xFF), (unsigned)((senderIP >> 16) & 0xFF),
+						(unsigned)((senderIP >> 8) & 0xFF), (unsigned)(senderIP & 0xFF));
+			}
+#endif
 			//DEBUG_LOG(("LAN message type %s from %ls (%s@%s)", GetMessageTypeString(msg->messageType).str(),
 			//	msg->name, msg->userName, msg->hostName));
 			switch (msg->messageType)

@@ -24,6 +24,8 @@
 
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#include <cerrno>
+#include <cstdio>
 
 #include "Common/crc.h"
 #include "GameNetwork/Transport.h"
@@ -239,6 +241,18 @@ Bool Transport::doSend() {
 			else
 			{
 				//DEBUG_LOG(("Could not write to socket!!!  Not discarding message!"));
+#if defined(__APPLE__)
+				// iOS fails sends to dead/unresolvable hosts (the LAN lobby sweep targets a whole /24). Keeping those
+				// packets queued filled the 256-slot send queue and starved real traffic (join/start timeouts).
+				{
+					static int s_failLog = 0;
+					if (s_failLog++ < 30)
+						fprintf(stderr, "[GX-LAN] send failed errno=%d to %u.%u.%u.%u:%d (dropped)\n", errno,
+							(unsigned)((m_outBuffer[i].addr >> 24) & 0xFF), (unsigned)((m_outBuffer[i].addr >> 16) & 0xFF),
+							(unsigned)((m_outBuffer[i].addr >> 8) & 0xFF), (unsigned)(m_outBuffer[i].addr & 0xFF), (int)m_outBuffer[i].port);
+					m_outBuffer[i].length = 0;
+				}
+#endif
 				retval = FALSE;
 				//DEBUG_LOG(("Transport::doSend returning FALSE"));
 			}
