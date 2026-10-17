@@ -1,0 +1,88 @@
+name: "Spike b: symbol hiding (Generals)"
+
+# Builds the iPhone/iPad app on a GitHub macOS runner and packages it WITHOUT code
+# signing and WITHOUT game assets. Sign + install the resulting .ipa yourself
+# (e.g. Sideloadly / AltStore with your own Apple ID) and add your own game files.
+
+permissions:
+  contents: read
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [spike/symbol-hiding]
+    paths: [".github/workflows/spike-hide.yml","scripts/build/ios/spike-hide.sh"]
+
+jobs:
+  ios:
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - name: Checkout (with DXVK submodule)
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          submodules: false
+
+      - name: Init DXVK fork submodule
+        run: git submodule update --init --recursive --depth 1 references/fbraz3-dxvk
+
+      - name: Patch DXVK - static vertex strides (iOS 16 lacks VK_DYNAMIC_STATE_VERTEX_INPUT_BINDING_STRIDE)
+        run: |
+          F=references/fbraz3-dxvk/src/dxvk/dxvk_context.cpp
+          grep -n "bool newDynamicStrides = true;" "$F"
+          sed -i.bak 's/bool newDynamicStrides = true;/bool newDynamicStrides = false; \/\/ iOS16: MoltenVK has no dynamic vertex stride/' "$F"
+          grep -n "bool newDynamicStrides" "$F"
+          diff "$F.bak" "$F" || true
+
+      - name: Setup vcpkg (full clone; shallow clones break manifest baselines)
+        run: |
+          git clone https://github.com/microsoft/vcpkg "$HOME/vcpkg"
+          "$HOME/vcpkg/bootstrap-vcpkg.sh" -disableMetrics
+          echo "VCPKG_ROOT=$HOME/vcpkg" >> "$GITHUB_ENV"
+
+      - name: Install build tools
+        run: |
+          brew update
+          brew install cmake ninja meson pkg-config xcodegen glslang
+          brew install autoconf autoconf-archive automake libtool
+          cmake --version | head -1; ninja --version; meson --version; xcodegen --version
+
+      - name: Install Vulkan SDK (LunarG)
+        run: |
+          VER=1.4.341.1
+          URL="https://sdk.lunarg.com/sdk/download/$VER/mac/vulkansdk-macos-$VER.zip"
+          SHA=632cbe96c8ed6ed00c6ce25e3a7738c466134f76586e1c51f1419410d7f9042e
+          curl -fL --retry 3 -o /tmp/vk.zip "$URL"
+          echo "$SHA  /tmp/vk.zip" | shasum -a 256 -c -
+          mkdir -p /tmp/vk && unzip -q -o /tmp/vk.zip -d /tmp/vk
+          INSTALLER=$(find /tmp/vk -path '*Contents/MacOS/vulkansdk-macOS-*' -type f | head -1)
+          [ -n "$INSTALLER" ] || INSTALLER=$(find /tmp/vk -name 'vulkansdk-macOS-*' -type f | head -1)
+          chmod +x "$INSTALLER"
+          "$INSTALLER" --root "$HOME/VulkanSDK/$VER" --accept-licenses --default-answer --confirm-command install
+          if [ -d "$HOME/VulkanSDK/$VER/macOS" ]; then SDK="$HOME/VulkanSDK/$VER/macOS"; else SDK="$HOME/VulkanSDK/$VER"; fi
+          echo "VULKAN_SDK=$SDK" >> "$GITHUB_ENV"
+          ls "$SDK" | head
+
+      - name: Stage MoltenVK + fonts
+        run: |
+          ./scripts/build/ios/fetch-moltenvk.sh
+          ./scripts/build/ios/stage-fonts.sh
+
+      - name: Configure (ios-vulkan)
+        run: cmake --preset ios-vulkan
+
+      - name: Build engine (z_generals)
+        run: cmake --build build/ios-vulkan --target z_generals
+
+
+      - name: Spike - partial link + hide symbols
+        run: bash scripts/build/ios/spike-hide.sh build/ios-vulkan
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: spike-hide-report
+          path: build/spike-hide/
+          if-no-files-found: warn
