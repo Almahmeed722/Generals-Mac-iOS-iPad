@@ -209,6 +209,13 @@ else()
         Source/VideoDevice/BinkVideoPlayerStub.cpp
     )
 
+    # iOS only: on-screen hotkey bar (UIKit overlay, Objective-C++)
+    if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
+        enable_language(OBJCXX)
+        list(APPEND GAMEENGINEDEVICE_SRC Source/iOSHotkeyOverlay.mm)
+        set_source_files_properties(Source/iOSHotkeyOverlay.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+    endif()
+
     # GeneralsX @refactor fbraz3 31/03/2026 OpenALAudioDevice sources moved to Core/GameEngineDevice
     # OpenALAudioManager.cpp, OpenALAudioStream.cpp, OpenALAudioCache.cpp and FFmpegFile.cpp
     # are now provided by corei_gameenginedevice_private when SAGE_USE_OPENAL is enabled.

@@ -28,6 +28,9 @@
 ///////////////////////////////////////////////////////////////////////////////////////////////////
 
 #include "PreRTS.h"	// This must go first in EVERY cpp file in the GameEngine
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
 
 #include "Common/Debug.h"
 #include "Common/MessageStream.h"
@@ -597,22 +600,29 @@ void Mouse::onResolutionChanged()
 
 	m_tooltipDisplayString = TheDisplayStringManager->newDisplayString();
 
+#if defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+	// A phone screen is physically tiny: the tooltip text (General's powers, unit and build info)
+	// was unreadably small, so draw it larger there and let it wrap proportionally wider.
+	const Real tooltipScale = 1.7f;
+#else
+	const Real tooltipScale = 1.0f;
+#endif
 	if (TheGlobalLanguageData && TheGlobalLanguageData->m_tooltipFontName.name.isNotEmpty())
 	{
 		m_tooltipDisplayString->setFont( TheFontLibrary->getFont(
 			TheGlobalLanguageData->m_tooltipFontName.name,
-			TheGlobalLanguageData->adjustFontSize(TheGlobalLanguageData->m_tooltipFontName.size),
+			(Int)(TheGlobalLanguageData->adjustFontSize(TheGlobalLanguageData->m_tooltipFontName.size) * tooltipScale),
 			TheGlobalLanguageData->m_tooltipFontName.bold) );
 	}
 	else
 	{
 		m_tooltipDisplayString->setFont( TheFontLibrary->getFont(
 			m_tooltipFontName,
-			TheGlobalLanguageData->adjustFontSize(m_tooltipFontSize),
+			(Int)(TheGlobalLanguageData->adjustFontSize(m_tooltipFontSize) * tooltipScale),
 			m_tooltipFontIsBold ) );
 	}
 
-	m_tooltipDisplayString->setWordWrap(120);
+	m_tooltipDisplayString->setWordWrap((Int)(120 * tooltipScale));
 
 }
 
