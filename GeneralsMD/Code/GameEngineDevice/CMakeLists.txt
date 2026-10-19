@@ -212,7 +212,7 @@ else()
     # iOS only: on-screen hotkey bar (UIKit overlay, Objective-C++)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
         list(APPEND GAMEENGINEDEVICE_SRC Source/iOSHotkeyOverlay.mm)
-        set_source_files_properties(Source/iOSHotkeyOverlay.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+        set_source_files_properties(Source/iOSHotkeyOverlay.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc" SKIP_PRECOMPILE_HEADERS ON)
     endif()
 
     # GeneralsX @refactor fbraz3 31/03/2026 OpenALAudioDevice sources moved to Core/GameEngineDevice
