@@ -52,6 +52,9 @@
 #include "GameClient/View.h"
 #include "GameClient/Display.h"
 #include "GameClient/InGameUI.h"
+#include "GameClient/Shell.h"
+#include "Common/Radar.h"
+#include "Common/NameKeyGenerator.h"
 #include "GameLogic/GameLogic.h"
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
@@ -130,17 +133,26 @@ static bool SDLCALL iosLifecycleWatcher(void *userdata, SDL_Event *event)
 }
 
 // ---------------------------------------------------------------------------
-// iOS touch -> mouse gesture translation
+// iOS touch -> mouse / camera gesture translation
 //
 // SDL's automatic touch-mouse synthesis is disabled on iOS (SDL3Main.cpp sets
 // SDL_HINT_TOUCH_MOUSE_EVENTS=0); every mouse event the game sees on iOS is
 // synthesized here, through the same SDL3Mouse::addSDLEvent path real mice use.
 //
-// Gestures (matching the game's stock control scheme, which is LMB-centric):
-//   1 finger tap/drag     -> left button click / drag (select, command, drag-box)
-//   1 finger long-press   -> right button click (deselect), if finger stays put
-//   2 finger drag         -> right-button drag at the centroid (camera scroll)
-//   2 finger pinch        -> mouse wheel (camera zoom)
+// Gestures:
+//   1 finger tap                   -> left click (select / command); two quick taps -> double click
+//                                     (selects every unit of the same type that is on screen)
+//   1 finger swipe                 -> the map follows the finger (always the camera, never a selection
+//                                     box or an order); a quick flick keeps sliding for a moment
+//   1 finger held ~0.6 s           -> right click (deselect)
+//   building selected: hold 2 s    -> left click = set the building's rally / waypoint there
+//                                     (a quick tap on empty ground does nothing, so it can't change by accident)
+//   hold 1 finger, 2nd finger drags-> selection box; 2nd finger taps -> add that unit to the selection
+//   2 fingers together             -> move the map; spread / pinch -> zoom; twist -> rotate the camera
+//   2 finger quick tap             -> cancel (right click)
+//   finger on the minimap          -> the camera jumps to and follows the finger
+//   aiming a special power / placing a building -> the cursor follows the finger, click on release;
+//                                     holding near the screen edge scrolls the camera
 // ---------------------------------------------------------------------------
 namespace {
 
@@ -148,11 +160,13 @@ struct TouchState {
 	enum Phase {
 		IDLE,        // no fingers tracked
 		PENDING,     // finger1 down, gesture identity not yet known, nothing sent
-		DRAGGING,    // finger1 drag in progress, LMB held
-		LONGPRESSED, // long-press fired (RMB click sent), swallow until lift
+		GRABPAN,     // one-finger swipe: the map follows the finger
 		PAN,         // two-finger camera gesture: move / zoom / rotate (applied once per frame)
-		GRABPAN,     // one-finger camera drag ("Move map" mode): the map follows the finger
-		TARGETING    // aiming a special power / placing a building: the cursor follows the finger, click on release
+		HOLDSELECT,  // finger1 held still, finger2 draws a selection box or taps to add a unit
+		MINIMAP,     // finger on the minimap: the camera follows it
+		TARGETING,   // aiming a special power / placing a building: cursor follows the finger
+		UIDRAG,      // finger on a menu / control-bar window: a drag stays a normal mouse drag (sliders, lists)
+		LONGPRESSED  // a long press already fired, swallow the rest of the touch
 	};
 
 	Phase phase = IDLE;
@@ -160,47 +174,62 @@ struct TouchState {
 	SDL_FingerID finger2 = 0;
 	float downX = 0.0f, downY = 0.0f;   // finger1 down position (window points)
 	float lastX = 0.0f, lastY = 0.0f;   // finger1 latest position
-	float panX = 0.0f, panY = 0.0f;     // pan centroid
 	float pinchDist = 0.0f;             // finger distance at last wheel step
 	Uint64 downTicks = 0;
 	float f1x = 0.0f, f1y = 0.0f, f2x = 0.0f, f2y = 0.0f; // normalized per finger
+	bool battlefield = false;           // this touch started on the battlefield of a running match (not on a menu / UI window)
+	// hold-select
+	float selDownX = 0.0f, selDownY = 0.0f, selLastX = 0.0f, selLastY = 0.0f;
+	bool selActive = false;
+	// two-finger tap detection
+	Uint64 panStartTicks = 0;
+	float panTravel = 0.0f;
 };
 
 TouchState s_touch;
 
 const Uint64 LONG_PRESS_MS = 600;
+const Uint64 RALLY_HOLD_MS = 2000;     // hold this long to give a building a rally / waypoint
+const Uint64 HOLD_SELECT_MS = 220;     // finger1 must have been still this long before finger2 means "select"
+const Uint64 DOUBLE_TAP_MS = 350;
+const float DOUBLE_TAP_DIST_PX = 48.0f;
 const float PINCH_STEP_RATIO = 0.05f;  // 5% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 14.0f;  // jitter below this keeps a tap a tap (a thumb moves ~10pt while tapping)
-const float TAP_CLICK_SLACK_PX = 22.0f; // a drag that ends this close to where it began is still a plain click
 const float GESTURE_DEADBAND_PX = 1.5f; // per-frame movement below this is finger noise
 const float ROTATE_GAIN = 1.6f;        // camera turns this many times faster than the fingers twist
 const float COAST_DECAY = 0.92f;       // camera keeps sliding after a quick flick, slowing by 8% per frame
 const float COAST_START_MIN = 3.0f;    // world units per frame needed to start sliding
 const float COAST_STOP_MIN = 0.4f;
-
-bool s_moveMode = false;               // "Move map" toggle from the on-screen bar
+const Uint64 TWO_FINGER_TAP_MS = 350;
+const float TWO_FINGER_TAP_TRAVEL_PX = 24.0f;
 
 struct CamState {
 	bool hasPrev = false;
 	float prevCx = 0.0f, prevCy = 0.0f, prevDist = 0.0f, prevAng = 0.0f;
 	float velX = 0.0f, velY = 0.0f;      // recent camera velocity in world units per frame
 	bool coasting = false;
+	float rotAccum = 0.0f;               // rotation still to be applied, eased in over a few frames
 };
 CamState s_cam;
 
-// A tap is delivered over two frames (cursor already moved at touch-down, button down on the
+// A click is delivered over three frames (cursor already moved at touch-down, button down on the
 // next frame, button up on the one after) so the game's hover/placement logic sees the cursor
 // before the click, the way it does for a real mouse.
 struct PendingTap {
 	int stage = -1;                      // -1 none; 2 = wait a frame, 1 = send button down, 0 = send button up
 	float x = 0.0f, y = 0.0f;
+	Uint8 button = SDL_BUTTON_LEFT;
+	bool shift = false;                  // hold Shift for this click (add to the selection)
 	bool wasPlacing = false;             // the click happened while a building was being placed
 };
 PendingTap s_tap;
 int s_postPlaceFrames = 0;               // frames left to watch for a finished building placement
+int s_shiftReleaseFrames = 0;            // frames until the helper Shift key is released
+Uint64 s_lastTapTicks = 0;               // for double-tap detection
+float s_lastTapX = 0.0f, s_lastTapY = 0.0f;
 
 void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
-                        float x, float y, Uint8 button = 0, float wheelY = 0.0f)
+                        float x, float y, Uint8 button = 0, float wheelY = 0.0f, int clicks = 1)
 {
 	// The windowID must be valid: SDL3Mouse::scaleMouseCoordinates() looks the
 	// window up by id to map window points into the game's internal resolution,
@@ -221,7 +250,7 @@ void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
 			ev.button.windowID = windowID;
 			ev.button.button = button;
 			ev.button.down = (type == SDL_EVENT_MOUSE_BUTTON_DOWN);
-			ev.button.clicks = 1;
+			ev.button.clicks = (Uint8)clicks; // 2 = the engine treats it as a double click
 			ev.button.x = x;
 			ev.button.y = y;
 			break;
@@ -236,20 +265,29 @@ void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
 	mouse->addSDLEvent(&ev);
 }
 
-void beginPan(SDL3Mouse *mouse, SDL_Window *window, int winW, int winH)
+void queueClick(Uint8 button, float x, float y, bool shift)
 {
-	(void)mouse;
-	(void)window;
-	s_touch.panX = (s_touch.f1x + s_touch.f2x) * 0.5f * (float)winW;
-	s_touch.panY = (s_touch.f1y + s_touch.f2y) * 0.5f * (float)winH;
+	s_tap.stage = 2;
+	s_tap.x = x;
+	s_tap.y = y;
+	s_tap.button = button;
+	s_tap.shift = shift;
+	if (shift) {
+		gxHotkeySendKey(SDL_SCANCODE_LSHIFT, true);
+	}
+}
+
+void beginPan(int winW, int winH)
+{
 	const float dx = (s_touch.f1x - s_touch.f2x) * (float)winW;
 	const float dy = (s_touch.f1y - s_touch.f2y) * (float)winH;
 	s_touch.pinchDist = SDL_sqrtf(dx * dx + dy * dy);
-	// No mouse button is held any more: the old right-button scroll kept drifting the camera
-	// while pinching. The gesture is now applied directly to the camera once per frame.
+	// No mouse button is held: the gesture is applied directly to the camera once per frame.
 	s_cam.hasPrev = false;
 	s_cam.coasting = false;
 	s_cam.velX = s_cam.velY = 0.0f;
+	s_touch.panStartTicks = SDL_GetTicks();
+	s_touch.panTravel = 0.0f;
 	s_touch.phase = TouchState::PAN;
 }
 
@@ -299,13 +337,109 @@ void startCoast()
 }
 
 // True while the game waits for a target (spy drone / special power / attack-move target) or a
-// building placement: then a held finger must aim, not draw a selection box.
+// building placement: then a held finger must aim, not move the map.
 bool gxInTargetingMode()
 {
 	if (!TheInGameUI) {
 		return false;
 	}
 	return TheInGameUI->getGUICommand() != nullptr || TheInGameUI->getPendingPlaceType() != nullptr;
+}
+
+// Convert window points to the game's internal screen pixels.
+ICoord2D gxToScreen(float px, float py, int winW, int winH)
+{
+	ICoord2D s;
+	s.x = 0;
+	s.y = 0;
+	if (TheDisplay && winW > 0 && winH > 0) {
+		s.x = (Int)(px * (float)TheDisplay->getWidth() / (float)winW);
+		s.y = (Int)(py * (float)TheDisplay->getHeight() / (float)winH);
+	}
+	return s;
+}
+
+// Did this touch land on the battlefield of a running match (and not on a menu, the control bar, a dialog...)?
+// Only there does a one-finger swipe move the camera; on UI windows a drag stays a normal mouse drag.
+bool gxTouchOnBattlefield(float px, float py, int winW, int winH)
+{
+	if (!TheGameLogic || !TheGameLogic->isInGame() || !GameLogic::isInInteractiveGame(TheGameLogic->getGameMode())) {
+		return false;
+	}
+	if (TheShell && TheShell->isShellActive()) {
+		return false;
+	}
+	if (!TheWindowManager) {
+		return false;
+	}
+	const ICoord2D s = gxToScreen(px, py, winW, winH);
+	GameWindow *window = TheWindowManager->getWindowUnderCursor(s.x, s.y);
+	while (window) {
+		// an opaque window (or opaque parent) under the finger means UI, not the battlefield
+		if (!BitIsSet(window->winGetStatus(), WIN_STATUS_SEE_THRU)) {
+			return false;
+		}
+		window = window->winGetParent();
+	}
+	return true;
+}
+
+// True when something is selected and ALL of it is buildings (then a tap on empty ground would set
+// the building's rally point, which should only happen on a deliberate long hold).
+bool gxOnlyBuildingsSelected()
+{
+	if (!TheInGameUI) {
+		return false;
+	}
+	const DrawableList *list = TheInGameUI->getAllSelectedDrawables();
+	if (!list || list->empty()) {
+		return false;
+	}
+	for (DrawableListCIt it = list->begin(); it != list->end(); ++it) {
+		Drawable *draw = *it;
+		const Object *obj = draw ? draw->getObject() : nullptr;
+		if (!obj || !obj->isKindOf(KINDOF_STRUCTURE)) {
+			return false;
+		}
+	}
+	return true;
+}
+
+// Is there a selectable unit or building under this window point?
+bool gxObjectUnder(float px, float py, int winW, int winH)
+{
+	if (!TheTacticalView) {
+		return false;
+	}
+	const ICoord2D s = gxToScreen(px, py, winW, winH);
+	return TheTacticalView->pickDrawable(&s, FALSE, PICK_TYPE_SELECTABLE) != nullptr;
+}
+
+// The ground point under a finger that is on the minimap, or false when it is elsewhere.
+bool gxRadarWorldPointAt(float px, float py, int winW, int winH, Coord3D *world)
+{
+	if (!TheRadar || !TheWindowManager || !TheDisplay || winW <= 0 || winH <= 0) {
+		return false;
+	}
+	GameWindow *radarWin = TheWindowManager->winGetWindowFromId(nullptr, NAMEKEY("ControlBar.wnd:LeftHUD"));
+	if (!radarWin || radarWin->winIsHidden()) {
+		return false;
+	}
+	ICoord2D pos, size;
+	radarWin->winGetScreenPosition(&pos.x, &pos.y);
+	radarWin->winGetSize(&size.x, &size.y);
+	const ICoord2D s = gxToScreen(px, py, winW, winH);
+	ICoord2D local;
+	local.x = s.x - pos.x;
+	local.y = s.y - pos.y;
+	if (local.x < 0 || local.y < 0 || local.x >= size.x || local.y >= size.y) {
+		return false;
+	}
+	ICoord2D radar;
+	if (!TheRadar->localPixelToRadar(&local, &radar)) {
+		return false;
+	}
+	return TheRadar->radarToWorld(&radar, world) ? true : false;
 }
 
 // While a finger holds a target or a selection box near the screen edge, scroll the camera that way
@@ -332,17 +466,21 @@ void autoScrollAtEdges(float fx, float fy, int winW, int winH)
 	panCameraByScreen(cx, cy, cx - dirx * speed, cy - diry * speed, winW, winH);
 }
 
-// Deliver a tap that is still waiting for its button events (a new touch starts, so finish it first).
+// Deliver a click that is still waiting for its button events (a new touch starts, so finish it first).
 void flushPendingTap(SDL3Mouse *mouse, SDL_Window *window)
 {
 	if (s_tap.stage < 0) {
 		return;
 	}
 	if (s_tap.stage >= 1) {
-		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_tap.x, s_tap.y, SDL_BUTTON_LEFT);
+		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_tap.x, s_tap.y, s_tap.button);
 	}
-	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, s_tap.x, s_tap.y, SDL_BUTTON_LEFT);
+	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, s_tap.x, s_tap.y, s_tap.button);
 	s_tap.stage = -1;
+	if (s_tap.shift) {
+		s_shiftReleaseFrames = 3;
+		s_tap.shift = false;
+	}
 	gxHotkeyNotifyTapDone();
 }
 
@@ -358,45 +496,73 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 		s_cam.coasting = false; // a new touch stops a sliding camera
 		flushPendingTap(mouse, window);
 		if (s_touch.phase == TouchState::IDLE) {
-			// Defer all BUTTON output: a finger landing could become a tap, a
-			// drag-box, a long-press, or the first finger of a camera pan. A
-			// premature LMB down+up is a real click to the game (e.g. it sets a
-			// rally point when a production building is selected).
+			// Defer all BUTTON output: a finger landing could become a tap, a swipe, a long-press,
+			// or the first finger of a two-finger gesture. A premature click is a real click to the
+			// game (e.g. it sets a rally point when a production building is selected).
 			s_touch.finger1 = event.tfinger.fingerID;
+			s_touch.finger2 = 0;
 			s_touch.phase = TouchState::PENDING;
 			s_touch.downX = s_touch.lastX = px;
 			s_touch.downY = s_touch.lastY = py;
 			s_touch.f1x = event.tfinger.x;
 			s_touch.f1y = event.tfinger.y;
 			s_touch.downTicks = SDL_GetTicks();
-			// Move the cursor to the touch point NOW (motion clicks nothing, so the
-			// deferred-tap protection is intact). This lets the GUI process hover
-			// over the next frame(s) before the tap commits — hover-driven widgets
-			// (e.g. the Generals Challenge general buttons, which are checkboxes
-			// that ignore a click unless WIN_STATE_HILITED was set by a prior
-			// mouse-enter) then accept the click. Real mice hover before clicking;
-			// without this, a synthetic tap teleports + clicks in one instant and
-			// the widget is never hilited, so only the default/first item responds.
+			s_touch.selActive = false;
+			// Move the cursor to the touch point NOW (motion clicks nothing, so the deferred-tap
+			// protection is intact). This lets the GUI process hover over the next frame(s) before
+			// the tap commits: hover-driven widgets (e.g. the Generals Challenge general buttons)
+			// ignore a click unless a prior mouse-enter hilited them.
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+			s_touch.battlefield = gxTouchOnBattlefield(px, py, winW, winH);
+			// A finger that lands on the minimap makes the camera jump to and follow it.
+			Coord3D radarWorld;
+			if (!gxInTargetingMode() && TheTacticalView && gxRadarWorldPointAt(px, py, winW, winH, &radarWorld)) {
+				TheTacticalView->userLookAt(&radarWorld);
+				s_touch.phase = TouchState::MINIMAP;
+			}
 		}
-		else if (s_touch.phase == TouchState::PENDING || s_touch.phase == TouchState::GRABPAN) {
-			// Second finger before the first committed to anything (or during a one-finger
-			// map drag): camera gesture, no left-click ever happened.
+		else if (s_touch.phase == TouchState::PENDING && s_touch.battlefield) {
 			s_touch.finger2 = event.tfinger.fingerID;
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
-			beginPan(mouse, window, winW, winH);
+			const bool heldStill = (SDL_GetTicks() - s_touch.downTicks) >= HOLD_SELECT_MS;
+			if (gxInTargetingMode()) {
+				// A second finger while aiming cancels (same as a right click).
+				queueClick(SDL_BUTTON_RIGHT, 0.5f * (float)winW, 0.5f * (float)winH, false);
+				s_touch.phase = TouchState::LONGPRESSED;
+			}
+			else if (heldStill) {
+				// Finger 1 has been resting on the screen: finger 2 selects.
+				s_touch.selDownX = s_touch.selLastX = px;
+				s_touch.selDownY = s_touch.selLastY = py;
+				s_touch.selActive = false;
+				s_touch.phase = TouchState::HOLDSELECT;
+			}
+			else {
+				beginPan(winW, winH);
+			}
 		}
-		else if (s_touch.phase == TouchState::DRAGGING) {
-			// Second finger during a live drag: finish the drag-box, then pan.
+		else if (s_touch.phase == TouchState::GRABPAN) {
+			// Second finger during a one-finger swipe: two-finger camera gesture.
 			s_touch.finger2 = event.tfinger.fingerID;
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
-			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
-			                   s_touch.lastX, s_touch.lastY, SDL_BUTTON_LEFT);
-			beginPan(mouse, window, winW, winH);
+			beginPan(winW, winH);
 		}
-		// LONGPRESSED / PAN with extra fingers: ignored
+		else if (s_touch.phase == TouchState::TARGETING) {
+			// Second finger while aiming a power / placing a building: cancel.
+			queueClick(SDL_BUTTON_RIGHT, 0.5f * (float)winW, 0.5f * (float)winH, false);
+			s_touch.finger2 = event.tfinger.fingerID;
+			s_touch.phase = TouchState::LONGPRESSED;
+		}
+		else if (s_touch.phase == TouchState::HOLDSELECT && s_touch.finger2 == 0) {
+			// Another selection with the second finger while finger 1 keeps resting.
+			s_touch.finger2 = event.tfinger.fingerID;
+			s_touch.selDownX = s_touch.selLastX = px;
+			s_touch.selDownY = s_touch.selLastY = py;
+			s_touch.selActive = false;
+		}
+		// MINIMAP / LONGPRESSED / PAN with extra fingers: ignored
 		break;
 
 	case SDL_EVENT_FINGER_MOTION:
@@ -405,7 +571,8 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			s_touch.f1y = event.tfinger.y;
 			s_touch.lastX = px;
 			s_touch.lastY = py;
-		} else if (s_touch.phase == TouchState::PAN && event.tfinger.fingerID == s_touch.finger2) {
+		} else if (s_touch.finger2 != 0 && event.tfinger.fingerID == s_touch.finger2 &&
+		           (s_touch.phase == TouchState::PAN || s_touch.phase == TouchState::HOLDSELECT)) {
 			s_touch.f2x = event.tfinger.x;
 			s_touch.f2y = event.tfinger.y;
 		} else {
@@ -415,15 +582,14 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 		if (s_touch.phase == TouchState::PENDING && event.tfinger.fingerID == s_touch.finger1) {
 			const float moved = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
 			if (gxInTargetingMode()) {
-				// A special power / building placement is waiting for a target: the cursor
-				// (and the white targeting circle or ghost building) follows the finger from
-				// the first movement; the click happens when the finger lifts.
+				// A special power / building placement is waiting for a target: the cursor (and the white
+				// targeting circle or ghost building) follows the finger from the first movement; the
+				// click happens when the finger lifts.
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 				s_touch.phase = TouchState::TARGETING;
 			}
-			else if (moved >= TAP_DEAD_ZONE_PX && s_moveMode) {
-				// "Move map" mode: a one-finger drag drags the map itself instead of
-				// drawing a selection box. Applied once per frame (updateCameraGestures).
+			else if (moved >= TAP_DEAD_ZONE_PX && s_touch.battlefield) {
+				// A swipe: the map follows the finger (applied once per frame in updateTouchLongPress).
 				s_cam.hasPrev = true;
 				s_cam.prevCx = s_touch.downX;
 				s_cam.prevCy = s_touch.downY;
@@ -432,99 +598,174 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				s_touch.phase = TouchState::GRABPAN;
 			}
 			else if (moved >= TAP_DEAD_ZONE_PX) {
-				// Commit to a drag: anchor the LMB at the original touch point so
-				// drag-boxes start where the finger first landed.
+				// A menu / control bar / dialog: keep the normal mouse drag (sliders, scroll bars, lists).
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
 				                   s_touch.downX, s_touch.downY, SDL_BUTTON_LEFT);
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
-				s_touch.phase = TouchState::DRAGGING;
+				s_touch.phase = TouchState::UIDRAG;
 			}
 		}
-		else if ((s_touch.phase == TouchState::DRAGGING || s_touch.phase == TouchState::TARGETING) &&
+		else if ((s_touch.phase == TouchState::TARGETING || s_touch.phase == TouchState::UIDRAG) &&
 		         event.tfinger.fingerID == s_touch.finger1) {
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 		}
-		// PAN / GRABPAN: finger positions are stored above; the camera is moved once per frame
-		// in updateCameraGestures() so every move is measured against an up-to-date camera.
+		else if (s_touch.phase == TouchState::HOLDSELECT && event.tfinger.fingerID == s_touch.finger2) {
+			s_touch.selLastX = px;
+			s_touch.selLastY = py;
+			if (!s_touch.selActive) {
+				const float moved = SDL_fabsf(px - s_touch.selDownX) + SDL_fabsf(py - s_touch.selDownY);
+				if (moved >= TAP_DEAD_ZONE_PX) {
+					// Start the selection box where finger 2 first landed.
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.selDownX, s_touch.selDownY);
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+					                   s_touch.selDownX, s_touch.selDownY, SDL_BUTTON_LEFT);
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+					s_touch.selActive = true;
+				}
+			} else {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+			}
+		}
+		// PAN / GRABPAN / MINIMAP: finger positions are stored above; the camera is moved once per
+		// frame in updateTouchLongPress() so every move is measured against an up-to-date camera.
 		break;
 
 	case SDL_EVENT_FINGER_UP:
 	case SDL_EVENT_FINGER_CANCELED:
+		if (s_touch.phase == TouchState::HOLDSELECT) {
+			if (s_touch.finger2 != 0 && event.tfinger.fingerID == s_touch.finger2) {
+				if (s_touch.selActive) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+					                   s_touch.selLastX, s_touch.selLastY, SDL_BUTTON_LEFT);
+					gxHotkeyNotifyTapDone();
+				}
+				else if (event.type != SDL_EVENT_FINGER_CANCELED) {
+					// A tap with the second finger adds that unit to the selection (Shift + click).
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.selDownX, s_touch.selDownY);
+					queueClick(SDL_BUTTON_LEFT, s_touch.selDownX, s_touch.selDownY, true);
+				}
+				s_touch.selActive = false;
+				s_touch.finger2 = 0; // finger 1 keeps resting: it can select again
+			}
+			else if (event.tfinger.fingerID == s_touch.finger1) {
+				if (s_touch.selActive) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+					                   s_touch.selLastX, s_touch.selLastY, SDL_BUTTON_LEFT);
+					gxHotkeyNotifyTapDone();
+				}
+				s_touch.selActive = false;
+				s_touch.finger2 = 0;
+				s_touch.phase = TouchState::IDLE;
+			}
+			break;
+		}
 		if (event.tfinger.fingerID != s_touch.finger1 &&
 		    !(s_touch.phase == TouchState::PAN && event.tfinger.fingerID == s_touch.finger2)) {
 			break;
 		}
 		switch (s_touch.phase) {
 			case TouchState::PENDING:
-				// A CANCELED touch (incoming call, notification shade, palm
-				// rejection) must not become a committed tap — that would be a
-				// phantom select/command/rally-point click at the cancel point.
+				// A CANCELED touch (incoming call, notification shade, palm rejection) must not become a
+				// committed tap: that would be a phantom select/command/rally-point click.
 				if (event.type == SDL_EVENT_FINGER_CANCELED) {
 					break;
 				}
-				// Clean tap: put the cursor on the press position now, then deliver the button
-				// down on the next frame and the button up on the one after (see s_tap).
+				// With only buildings selected, a quick tap on empty ground would silently move the
+				// building's rally point: ignore it (a 2 second hold does that on purpose).
+				if (gxOnlyBuildingsSelected() && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
+					break;
+				}
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
-				s_tap.stage = 2;
-				s_tap.x = s_touch.downX;
-				s_tap.y = s_touch.downY;
+				queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
 				break;
 			case TouchState::TARGETING:
-				// Aiming ends where the finger lifts: put the cursor there, then click (staged like a tap).
-				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
-				s_tap.stage = 2;
-				s_tap.x = px;
-				s_tap.y = py;
-				break;
-			case TouchState::DRAGGING: {
-				// A "drag" that barely left the press point is a click, not a tiny selection box
-				// that misses the unit (this is what made small targets need several taps).
-				const float moved = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
-				if (moved < TAP_CLICK_SLACK_PX) {
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
-					                   s_touch.downX, s_touch.downY, SDL_BUTTON_LEFT);
-				} else {
-					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
+				// Aiming ends where the finger lifts: put the cursor there, then click.
+				if (event.type != SDL_EVENT_FINGER_CANCELED) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+					queueClick(SDL_BUTTON_LEFT, px, py, false);
 				}
-				gxHotkeyNotifyTapDone();
 				break;
-			}
 			case TouchState::PAN:
+				if (event.type != SDL_EVENT_FINGER_CANCELED &&
+				    (SDL_GetTicks() - s_touch.panStartTicks) <= TWO_FINGER_TAP_MS &&
+				    s_touch.panTravel < TWO_FINGER_TAP_TRAVEL_PX) {
+					// A quick two-finger tap cancels (a right click at mid-screen: it cancels a pending
+					// command or building placement and otherwise deselects).
+					queueClick(SDL_BUTTON_RIGHT, 0.5f * (float)winW, 0.5f * (float)winH, false);
+					s_cam.coasting = false;
+				} else {
+					startCoast();
+				}
+				break;
 			case TouchState::GRABPAN:
 				// Let a quick flick keep sliding the camera for a moment.
 				startCoast();
 				break;
+			case TouchState::UIDRAG: {
+				// A drag that barely left the press point is a plain click.
+				const float moved = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
+				if (moved < 22.0f) {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, s_touch.downX, s_touch.downY, SDL_BUTTON_LEFT);
+				} else {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
+				}
+				break;
+			}
 			default:
 				break;
 		}
+		s_touch.finger2 = 0;
 		s_touch.phase = TouchState::IDLE;
 		break;
 	}
 }
 
 // Called once per engine frame (not just per touch event): a perfectly
-// stationary finger produces no SDL events, so the long-press timer must be
-// polled from the frame loop or it would never fire.
+// stationary finger produces no SDL events, so the timers and camera gestures
+// must be polled from the frame loop.
 void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 {
-	// --- 1. staged tap: button down one frame after the cursor arrived, button up one frame later
+	// --- 1. staged click: button down one frame after the cursor arrived, button up one frame later
 	if (s_tap.stage == 0) {
-		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, s_tap.x, s_tap.y, SDL_BUTTON_LEFT);
+		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, s_tap.x, s_tap.y, s_tap.button);
 		s_tap.stage = -1;
 		gxHotkeyNotifyTapDone();
+		if (s_tap.shift) {
+			s_shiftReleaseFrames = 3;
+			s_tap.shift = false;
+		}
 		if (s_tap.wasPlacing) {
 			s_postPlaceFrames = 12; // watch the next frames: did the building order go through?
 		}
 	}
 	else if (s_tap.stage == 1) {
-		s_tap.wasPlacing = (TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr);
-		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_tap.x, s_tap.y, SDL_BUTTON_LEFT);
+		s_tap.wasPlacing = (s_tap.button == SDL_BUTTON_LEFT && TheInGameUI != nullptr &&
+		                    TheInGameUI->getPendingPlaceType() != nullptr);
+		// Two quick taps close together are a double click (selects every unit of that type on screen).
+		int clicks = 1;
+		if (s_tap.button == SDL_BUTTON_LEFT) {
+			const Uint64 now = SDL_GetTicks();
+			const float ddx = s_tap.x - s_lastTapX, ddy = s_tap.y - s_lastTapY;
+			if (s_lastTapTicks != 0 && (now - s_lastTapTicks) <= DOUBLE_TAP_MS &&
+			    SDL_sqrtf(ddx * ddx + ddy * ddy) <= DOUBLE_TAP_DIST_PX) {
+				clicks = 2;
+				s_lastTapTicks = 0;
+			} else {
+				s_lastTapTicks = now;
+				s_lastTapX = s_tap.x;
+				s_lastTapY = s_tap.y;
+			}
+		}
+		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_tap.x, s_tap.y, s_tap.button, 0.0f, clicks);
 		s_tap.stage = 0;
 	}
 	else if (s_tap.stage == 2) {
 		s_tap.stage = 1;
+	}
+	if (s_shiftReleaseFrames > 0 && --s_shiftReleaseFrames == 0) {
+		gxHotkeySendKey(SDL_SCANCODE_LSHIFT, false);
 	}
 
 	// After a building was placed the dozer should not stay selected: the next tap would send him
@@ -566,8 +807,9 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 				s_cam.hasPrev = (dist >= 1.0f);
 				break;
 			}
-			// One gesture wins per frame: fingers moving together move the map, fingers
-			// spreading/pinching zoom (camera stays put), fingers twisting rotate the camera.
+			// The fingers' centre moving = move the map; spreading / pinching = zoom; twisting = rotate.
+			// Zoom and rotate can happen together; the map only moves along when that movement is not
+			// just the side effect of a pinch or twist (so zooming keeps the camera still).
 			const float dPan = SDL_sqrtf((cx - s_cam.prevCx) * (cx - s_cam.prevCx) + (cy - s_cam.prevCy) * (cy - s_cam.prevCy));
 			const float dZoom = SDL_fabsf(dist - s_cam.prevDist);
 			float dAng = ang - s_cam.prevAng;
@@ -575,36 +817,49 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 			while (dAng > PI_F) dAng -= 2.0f * PI_F;
 			while (dAng < -PI_F) dAng += 2.0f * PI_F;
 			const float dRot = SDL_fabsf(dAng) * dist * 0.5f; // arc length travelled by each finger
-			if (dPan >= dZoom && dPan >= dRot) {
-				if (dPan > GESTURE_DEADBAND_PX) {
-					panCameraByScreen(s_cam.prevCx, s_cam.prevCy, cx, cy, winW, winH);
-				}
+			s_touch.panTravel += dPan + dZoom + dRot;
+			const float other = (dZoom > dRot) ? dZoom : dRot;
+			if (dPan > GESTURE_DEADBAND_PX && dPan >= 0.7f * other) {
+				panCameraByScreen(s_cam.prevCx, s_cam.prevCy, cx, cy, winW, winH);
 			}
-			else if (dZoom >= dRot) {
-				if (dZoom > GESTURE_DEADBAND_PX && s_touch.pinchDist > 1.0f) {
+			if (dZoom > GESTURE_DEADBAND_PX && s_touch.pinchDist > 1.0f) {
+				const float mx = 0.5f * (float)winW, my = 0.5f * (float)winH;
+				for (int tick = 0; tick < 4; ++tick) {
 					const float ratio = dist / s_touch.pinchDist;
-					const float mx = 0.5f * (float)winW, my = 0.5f * (float)winH;
 					if (ratio > 1.0f + PINCH_STEP_RATIO || ratio < 1.0f - PINCH_STEP_RATIO) {
+						const bool zoomIn = ratio > 1.0f;
 						// Park the cursor mid-screen first so the zoom never triggers edge scrolling.
 						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, mx, my);
-						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL, mx, my, 0,
-						                   ratio > 1.0f ? 1.0f : -1.0f);
-						s_touch.pinchDist = dist;
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_WHEEL, mx, my, 0, zoomIn ? 1.0f : -1.0f);
+						s_touch.pinchDist *= zoomIn ? (1.0f + PINCH_STEP_RATIO) : (1.0f - PINCH_STEP_RATIO);
+					} else {
+						break;
 					}
 				}
 			}
-			else if (dRot > GESTURE_DEADBAND_PX) {
-				if (TheTacticalView) {
-					TheTacticalView->userSetAngle(TheTacticalView->getAngle() + ROTATE_GAIN * dAng);
-				}
+			if (dRot > GESTURE_DEADBAND_PX) {
+				s_cam.rotAccum += ROTATE_GAIN * dAng; // eased in below
 			}
 			s_cam.prevCx = cx; s_cam.prevCy = cy; s_cam.prevDist = dist; s_cam.prevAng = ang;
 			break;
 		}
+		case TouchState::MINIMAP: {
+			// The camera sits where the finger is on the minimap.
+			Coord3D radarWorld;
+			if (TheTacticalView && gxRadarWorldPointAt(s_touch.f1x * (float)winW, s_touch.f1y * (float)winH,
+			                                           winW, winH, &radarWorld)) {
+				TheTacticalView->userLookAt(&radarWorld);
+			}
+			break;
+		}
 		case TouchState::TARGETING:
-		case TouchState::DRAGGING:
-			// A held target or selection box near the edge pulls the camera along.
+			// A held target near the edge pulls the camera along.
 			autoScrollAtEdges(s_touch.f1x, s_touch.f1y, winW, winH);
+			break;
+		case TouchState::HOLDSELECT:
+			if (s_touch.selActive) {
+				autoScrollAtEdges(s_touch.f2x, s_touch.f2y, winW, winH);
+			}
 			break;
 		case TouchState::PENDING:
 			if (gxInTargetingMode()) {
@@ -627,18 +882,38 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 				s_cam.coasting = false;
 			}
 		}
+
+		// --- 3b. camera rotation eases in (and keeps easing out after the fingers lift) instead of jumping
+		if (TheTacticalView && SDL_fabsf(s_cam.rotAccum) > 0.0003f) {
+			const float step = s_cam.rotAccum * 0.5f;
+			TheTacticalView->userSetAngle(TheTacticalView->getAngle() + step);
+			s_cam.rotAccum -= step;
+		} else {
+			s_cam.rotAccum = 0.0f;
+		}
 	}
 
-	// --- 4. long press = right click (deselect) -- but never while aiming a target, where it would cancel it
-	if (s_touch.phase == TouchState::PENDING && !gxInTargetingMode() &&
-	    (SDL_GetTicks() - s_touch.downTicks) >= LONG_PRESS_MS) {
-		// No LMB was sent yet (deferred), so this is a pure right-click.
-		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
-		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
-		                   s_touch.downX, s_touch.downY, SDL_BUTTON_RIGHT);
-		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
-		                   s_touch.downX, s_touch.downY, SDL_BUTTON_RIGHT);
-		s_touch.phase = TouchState::LONGPRESSED;
+	// --- 4. holds: right click (deselect) after 0.6 s, or -- with only buildings selected -- a left click
+	//     (rally / waypoint) after 2 s. Never while aiming a target, where a click would be wrong.
+	if (s_touch.phase == TouchState::PENDING && !gxInTargetingMode()) {
+		const Uint64 held = SDL_GetTicks() - s_touch.downTicks;
+		const bool buildingsOnly = gxOnlyBuildingsSelected();
+		if (buildingsOnly) {
+			if (held >= RALLY_HOLD_MS && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
+				queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
+				s_touch.phase = TouchState::LONGPRESSED;
+			}
+		}
+		else if (held >= LONG_PRESS_MS) {
+			// No LMB was sent yet (deferred), so this is a pure right-click.
+			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
+			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
+			                   s_touch.downX, s_touch.downY, SDL_BUTTON_RIGHT);
+			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
+			                   s_touch.downX, s_touch.downY, SDL_BUTTON_RIGHT);
+			s_touch.phase = TouchState::LONGPRESSED;
+		}
 	}
 }
 
@@ -664,20 +939,66 @@ void gxHotkeySendKey(int scancode, bool down)
 	keyboard->addSDLEvent(&ev);
 }
 
-void gxHotkeySetMoveMode(bool on)
+// Cancel: a right click at mid-screen cancels a pending command or building placement, and otherwise
+// deselects (the game's default mouse scheme). Sent as a proper staged click.
+void gxHotkeyCancel()
 {
-	s_moveMode = on;
-}
-
-// Right click at the last touch point: cancels a pending target / placement.
-void gxHotkeyRightClick()
-{
-	SDL3Mouse* mouse = TheMouse ? dynamic_cast<SDL3Mouse*>(TheMouse) : nullptr;
-	if (!mouse || !TheSDL3Window) {
+	if (!TheSDL3Window) {
 		return;
 	}
-	sendSyntheticMouse(mouse, TheSDL3Window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_touch.lastX, s_touch.lastY, SDL_BUTTON_RIGHT);
-	sendSyntheticMouse(mouse, TheSDL3Window, SDL_EVENT_MOUSE_BUTTON_UP, s_touch.lastX, s_touch.lastY, SDL_BUTTON_RIGHT);
+	int winW = 0, winH = 0;
+	SDL_GetWindowSize(TheSDL3Window, &winW, &winH);
+	queueClick(SDL_BUTTON_RIGHT, 0.5f * (float)winW, 0.5f * (float)winH, false);
+}
+
+// Put the camera back to the game's normal direction, tilt and zoom.
+void gxHotkeyResetView()
+{
+	if (!TheTacticalView) {
+		return;
+	}
+	s_cam.rotAccum = 0.0f;
+	TheTacticalView->userSetAngleToDefault();
+	TheTacticalView->userSetPitchToDefault();
+	TheTacticalView->userSetZoomToDefault();
+}
+
+// Select every ground combat unit (soldiers and vehicles) on the map; not buildings, aircraft,
+// dozers/workers, harvesters or units that are inside a building or transport.
+void gxHotkeySelectArmy()
+{
+	if (!TheInGameUI) {
+		return;
+	}
+	KindOfMaskType clear;
+	clear.set(KINDOF_DOZER);
+	clear.set(KINDOF_HARVESTER);
+	clear.set(KINDOF_IGNORES_SELECT_ALL);
+	clear.set(KINDOF_AIRCRAFT);
+	clear.set(KINDOF_STRUCTURE);
+	TheInGameUI->deselectAllDrawables();
+	KindOfMaskType infantry;
+	infantry.set(KINDOF_INFANTRY);
+	TheInGameUI->selectAllUnitsByTypeAcrossMap(infantry, clear);
+	KindOfMaskType vehicles;
+	vehicles.set(KINDOF_VEHICLE);
+	TheInGameUI->selectAllUnitsByTypeAcrossMap(vehicles, clear);
+}
+
+// Select all combat aircraft on the map (the game's own "select all aircraft" rule).
+void gxHotkeySelectAir()
+{
+	if (!TheInGameUI) {
+		return;
+	}
+	KindOfMaskType clear;
+	clear.set(KINDOF_DOZER);
+	clear.set(KINDOF_HARVESTER);
+	clear.set(KINDOF_IGNORES_SELECT_ALL);
+	TheInGameUI->deselectAllDrawables();
+	KindOfMaskType aircraft;
+	aircraft.set(KINDOF_AIRCRAFT);
+	TheInGameUI->selectAllUnitsByTypeAcrossMap(aircraft, clear);
 }
 #endif // TARGET_OS_IPHONE
 
@@ -871,6 +1192,39 @@ void SDL3GameEngine::update(void)
 		if (s_overlayCreated && (int)inMatch != s_overlayShown) {
 			gxHotkeyOverlaySetVisible(inMatch);
 			s_overlayShown = (int)inMatch;
+		}
+		// Put the quick buttons right above the money / power bars (the game's own windows).
+		if (s_overlayCreated && inMatch && TheWindowManager && TheDisplay && m_SDLWindow) {
+			int winW = 0, winH = 0;
+			SDL_GetWindowSize(m_SDLWindow, &winW, &winH);
+			float left = -1.0f, top = -1.0f;
+			const char *names[2] = { "ControlBar.wnd:MoneyDisplay", "ControlBar.wnd:PowerWindow" };
+			for (int n = 0; n < 2 && winW > 0 && TheDisplay->getWidth() > 0; ++n) {
+				GameWindow *w = TheWindowManager->winGetWindowFromId(nullptr, NAMEKEY(names[n]));
+				if (!w || w->winIsHidden()) continue;
+				ICoord2D pos;
+				w->winGetScreenPosition(&pos.x, &pos.y);
+				const float x = (float)pos.x * (float)winW / (float)TheDisplay->getWidth();
+				const float y = (float)pos.y * (float)winH / (float)TheDisplay->getHeight();
+				if (left < 0.0f || x < left) left = x;
+				if (top < 0.0f || y < top) top = y;
+			}
+			gxHotkeyOverlaySetQuickAnchor(left, top);
+		}
+	}
+
+	// Allow zooming out further than the PC default (a phone screen is small). Done once; the game's
+	// own camera limit is recalculated from this value.
+	{
+		static bool s_zoomPatched = false;
+		if (!s_zoomPatched && TheWritableGlobalData && TheTacticalView && TheGameLogic &&
+		    TheGameLogic->isInGame() && GameLogic::isInInteractiveGame(TheGameLogic->getGameMode())) {
+			const Real wantedMax = 520.0f;
+			if (TheWritableGlobalData->m_maxCameraHeight < wantedMax) {
+				TheWritableGlobalData->m_maxCameraHeight = wantedMax;
+			}
+			TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
+			s_zoomPatched = true;
 		}
 	}
 #endif
