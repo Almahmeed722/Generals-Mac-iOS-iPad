@@ -211,7 +211,6 @@ else()
 
     # iOS only: on-screen hotkey bar (UIKit overlay, Objective-C++)
     if(CMAKE_SYSTEM_NAME STREQUAL "iOS")
-        enable_language(OBJCXX)
         list(APPEND GAMEENGINEDEVICE_SRC Source/iOSHotkeyOverlay.mm)
         set_source_files_properties(Source/iOSHotkeyOverlay.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
     endif()
