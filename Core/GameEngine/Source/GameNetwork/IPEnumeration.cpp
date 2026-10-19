@@ -95,6 +95,55 @@ EnumeratedIP * IPEnumeration::getAddresses()
 	struct ifaddrs *ifaddr = nullptr;
 	if (getifaddrs(&ifaddr) == 0)
 	{
+#if defined(__APPLE__)
+		// iOS lists every active interface: Wi-Fi (en0), VPN tunnels (utun*: Tailscale, the sideloading helper VPN),
+		// cellular (pdp_ip*), AirDrop (awdl*)... Only Wi-Fi / Ethernet can carry a LAN game. Using a VPN address made
+		// the lobby sweep a bogus subnet and hear its own messages looped back (the same player listed many times).
+		// So: Wi-Fi / Ethernet interfaces only, and en0 first.
+		for (int pass = 0; pass < 2; ++pass)
+		for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
+		{
+			if (ifa->ifa_addr == nullptr || ifa->ifa_name == nullptr || ifa->ifa_addr->sa_family != AF_INET)
+			{
+				continue;
+			}
+			if ((ifa->ifa_flags & IFF_UP) == 0 || (ifa->ifa_flags & IFF_LOOPBACK) != 0)
+			{
+				continue;
+			}
+			const bool isEn = (ifa->ifa_name[0] == 'e' && ifa->ifa_name[1] == 'n');
+			if (!isEn)
+			{
+				continue; // utun*, ipsec*, pdp_ip*, awdl*, llw*, bridge*, ...
+			}
+			const bool isEn0 = (ifa->ifa_name[2] == '0' && ifa->ifa_name[3] == 0);
+			if ((pass == 0) != isEn0)
+			{
+				continue; // pass 0: en0 only; pass 1: the other en* interfaces
+			}
+			const sockaddr_in *addr = reinterpret_cast<const sockaddr_in *>(ifa->ifa_addr);
+			const UnsignedInt hostAddr = ntohl(addr->sin_addr.s_addr);
+			if ((hostAddr >> 16) == 0xA9FE)
+			{
+				continue; // 169.254.x.x self-assigned: not connected to a network
+			}
+			addNewIP(
+				(UnsignedByte)((hostAddr >> 24) & 0xFF),
+				(UnsignedByte)((hostAddr >> 16) & 0xFF),
+				(UnsignedByte)((hostAddr >> 8) & 0xFF),
+				(UnsignedByte)(hostAddr & 0xFF));
+		}
+		freeifaddrs(ifaddr);
+		if (m_IPlist)
+		{
+			return m_IPlist;
+		}
+		ifaddr = nullptr;
+		if (getifaddrs(&ifaddr) != 0)
+		{
+			ifaddr = nullptr;
+		}
+#endif
 		for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
 		{
 			if (ifa->ifa_addr == nullptr)

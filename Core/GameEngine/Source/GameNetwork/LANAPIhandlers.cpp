@@ -125,7 +125,26 @@ void LANAPI::handleRequestLocations( LANMessage *msg, UnsignedInt senderIP )
 		removePlayer(player);
 	}
 	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-	player->setName(UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+	{
+		// Two different devices can share one player name (every device starts with the same default). Tell them
+		// apart in the lobby by the last part of their address, e.g. "Name (171)".
+		UnicodeString announcedName(GetWindowsWideCharAsWchar(msg->name));
+		Bool sameName = (announcedName.compareNoCase(m_name) == 0);
+		for (LANPlayer *other = m_lobbyPlayers; other && !sameName; other = other->getNext())
+		{
+			if (other != player && other->getIP() != senderIP && other->getName().compareNoCase(announcedName) == 0)
+			{
+				sameName = TRUE;
+			}
+		}
+		if (sameName)
+		{
+			UnicodeString suffix;
+			suffix.format(L" (%u)", (unsigned int)(senderIP & 0xFF));
+			announcedName.concat(suffix);
+		}
+		player->setName(announcedName);
+	}
 	player->setHost(msg->hostName);
 	player->setLogin(msg->userName);
 	player->setLastHeard(timeGetTime());
@@ -215,7 +234,26 @@ void LANAPI::handleLobbyAnnounce( LANMessage *msg, UnsignedInt senderIP )
 		removePlayer(player);
 	}
 	// GeneralsX @bugfix BenderAI 13/02/2026 Wrap WideCharWindows with GetWindowsWideCharAsWchar (fighter19 pattern)
-	player->setName(UnicodeString(GetWindowsWideCharAsWchar(msg->name)));
+	{
+		// Two different devices can share one player name (every device starts with the same default). Tell them
+		// apart in the lobby by the last part of their address, e.g. "Name (171)".
+		UnicodeString announcedName(GetWindowsWideCharAsWchar(msg->name));
+		Bool sameName = (announcedName.compareNoCase(m_name) == 0);
+		for (LANPlayer *other = m_lobbyPlayers; other && !sameName; other = other->getNext())
+		{
+			if (other != player && other->getIP() != senderIP && other->getName().compareNoCase(announcedName) == 0)
+			{
+				sameName = TRUE;
+			}
+		}
+		if (sameName)
+		{
+			UnicodeString suffix;
+			suffix.format(L" (%u)", (unsigned int)(senderIP & 0xFF));
+			announcedName.concat(suffix);
+		}
+		player->setName(announcedName);
+	}
 	player->setHost(msg->hostName);
 	player->setLogin(msg->userName);
 	player->setLastHeard(timeGetTime());
