@@ -92,7 +92,10 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 @end
 
 @implementation GXKeyButton {
-	UIView *_glow;
+	const KeyDef *_def;
+	UIImageView *_bg;       // button artwork
+	UIImageView *_lit;      // the pressed / switched-on light (HotkeyUI/frame_lit.png), a little larger than the button
+	UIView *_glow;          // plain light, only if that artwork is missing
 	UIImageView *_icon;
 	UILabel *_label;
 }
@@ -102,16 +105,15 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	self = [super initWithFrame:frame];
 	if (!self) return nil;
 	_defIndex = index;
+	_def = def;
 
 	NSString *framePath = [[NSBundle mainBundle] pathForResource:@"frame" ofType:@"png" inDirectory:@"HotkeyUI"];
 	UIImage *frameImage = framePath ? [UIImage imageWithContentsOfFile:framePath] : nil;
 	if (frameImage) {
-		UIImageView *bg = [[UIImageView alloc] initWithFrame:self.bounds];
-		bg.image = frameImage;
-		bg.contentMode = UIViewContentModeScaleToFill;
-		bg.userInteractionEnabled = NO;
-		bg.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-		[self addSubview:bg];
+		_bg = [[UIImageView alloc] initWithImage:frameImage];
+		_bg.contentMode = UIViewContentModeScaleToFill;
+		_bg.userInteractionEnabled = NO;
+		[self addSubview:_bg];
 	} else {
 		self.backgroundColor = [UIColor colorWithRed:0.07 green:0.12 blue:0.2 alpha:0.92];
 		self.layer.cornerRadius = 9.0;
@@ -119,70 +121,113 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 		self.layer.borderColor = cyan().CGColor;
 	}
 
-	_glow = [[UIView alloc] initWithFrame:CGRectInset(self.bounds, 4, 4)];
-	_glow.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:1.0 alpha:0.35];
-	_glow.layer.cornerRadius = 7.0;
-	_glow.userInteractionEnabled = NO;
-	_glow.hidden = YES;
-	_glow.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-	[self addSubview:_glow];
+	NSString *litPath = [[NSBundle mainBundle] pathForResource:@"frame_lit" ofType:@"png" inDirectory:@"HotkeyUI"];
+	UIImage *litImage = litPath ? [UIImage imageWithContentsOfFile:litPath] : nil;
+	if (litImage) {
+		_lit = [[UIImageView alloc] initWithImage:litImage];
+		_lit.contentMode = UIViewContentModeScaleToFill;
+		_lit.userInteractionEnabled = NO;
+		_lit.alpha = 0.0;
+		[self addSubview:_lit];
+	} else {
+		_glow = [[UIView alloc] initWithFrame:CGRectZero];
+		_glow.backgroundColor = [UIColor colorWithRed:0.2 green:0.8 blue:1.0 alpha:0.45];
+		_glow.layer.cornerRadius = 7.0;
+		_glow.userInteractionEnabled = NO;
+		_glow.hidden = YES;
+		[self addSubview:_glow];
+	}
 
-	const CGFloat w = frame.size.width, h = frame.size.height;
 	// The number and Ctrl buttons show only big text; the others an icon with a small name under it.
 	const BOOL textOnly = (def->kind == KIND_NUMBER || def->kind == KIND_SETGROUP);
-	// The lit face of the button artwork starts ~6% inside the picture: everything is centred in it,
-	// and the text is kept inside it (long names like "Same type" shrink instead of running over).
-	const CGFloat faceInset = w * 0.09;
-	const CGRect face = CGRectInset(self.bounds, faceInset, faceInset);
-
-	UIFont *font = [UIFont systemFontOfSize:(def->kind == KIND_NUMBER ? h * 0.46 : (textOnly ? h * 0.30 : h * 0.17)) weight:UIFontWeightBold];
-	_label = [[UILabel alloc] initWithFrame:face];
+	if (!textOnly) {
+		_icon = [[UIImageView alloc] initWithFrame:CGRectZero];
+		_icon.contentMode = UIViewContentModeScaleAspectFit;
+		_icon.tintColor = cyan();
+		_icon.userInteractionEnabled = NO;
+		[self addSubview:_icon];
+	}
+	_label = [[UILabel alloc] initWithFrame:CGRectZero];
 	_label.text = [NSString stringWithUTF8String:def->label];
 	_label.textAlignment = NSTextAlignmentCenter;
-	_label.textColor = textOnly ? cyan() : [UIColor colorWithWhite:0.96 alpha:1.0];
-	_label.font = font;
 	_label.adjustsFontSizeToFitWidth = YES;
 	_label.minimumScaleFactor = 0.5;
 	_label.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
 	_label.userInteractionEnabled = NO;
+	[self addSubview:_label];
+	[self updateLookAnimated:NO];
+	return self;
+}
 
+// Everything is placed from the button's CURRENT size (the buttons are resized after they are created),
+// so text and icons stay exactly in the middle.
+- (void)layoutSubviews
+{
+	[super layoutSubviews];
+	const CGFloat w = self.bounds.size.width, h = self.bounds.size.height;
+	_bg.frame = self.bounds;
+	if (_lit) {
+		const CGFloat side = w * (171.0 / 160.0); // the light artwork has a soft rim around the button face
+		_lit.frame = CGRectMake((w - side) * 0.5, (h - side) * 0.5, side, side);
+	}
+	_glow.frame = CGRectInset(self.bounds, 4, 4);
+
+	const BOOL textOnly = (_def->kind == KIND_NUMBER || _def->kind == KIND_SETGROUP);
+	// The lit face of the button artwork starts ~6% inside the picture: everything is centred in it, and the
+	// text is kept inside it (long names like "Same type" shrink instead of running over).
+	const CGFloat faceInset = w * 0.09;
+	const CGRect face = CGRectInset(self.bounds, faceInset, faceInset);
+	UIFont *font = [UIFont systemFontOfSize:(_def->kind == KIND_NUMBER ? h * 0.46 : (textOnly ? h * 0.30 : h * 0.17)) weight:UIFontWeightBold];
+	_label.font = font;
 	if (textOnly) {
 		// A label centres its whole line box (ascender to descender); shift it so the glyphs themselves
 		// sit exactly in the middle of the button.
 		const CGFloat dy = (font.capHeight + fabs(font.descender) - font.ascender) / 2.0;
 		_label.frame = CGRectOffset(face, 0, dy);
 	} else {
-		UIImage *symbol = nil;
-		if (def->symbol[0] != 0) {
+		if (_def->symbol[0] != 0) {
 			UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:h * 0.30 weight:UIImageSymbolWeightSemibold];
-			symbol = [UIImage systemImageNamed:[NSString stringWithUTF8String:def->symbol] withConfiguration:cfg];
+			UIImage *symbol = [UIImage systemImageNamed:[NSString stringWithUTF8String:_def->symbol] withConfiguration:cfg];
+			_icon.image = [symbol imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 		}
 		// icon + name are centred together, as one block, in the face
 		const CGFloat iconH = h * 0.34, labelH = h * 0.18, gap = h * 0.03;
 		const CGFloat top = (h - (iconH + gap + labelH)) * 0.5;
-		_icon = [[UIImageView alloc] initWithFrame:CGRectMake(face.origin.x, top, face.size.width, iconH)];
-		_icon.contentMode = UIViewContentModeScaleAspectFit;
-		_icon.tintColor = cyan();
-		_icon.image = [symbol imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
-		_icon.userInteractionEnabled = NO;
-		[self addSubview:_icon];
+		_icon.frame = CGRectMake(face.origin.x, top, face.size.width, iconH);
 		_label.frame = CGRectMake(face.origin.x, top + iconH + gap, face.size.width, labelH);
 	}
-	[self addSubview:_label];
-	(void)w;
-	return self;
+}
+
+// The light: on at once when you press (or when a latched button is switched on), and a quick fade out
+// when you let go. Text and icon turn dark while the button is lit so they stay readable on the light.
+- (void)updateLookAnimated:(BOOL)animated
+{
+	const BOOL on = self.highlighted || _latched;
+	UIColor *ink = on ? [UIColor colorWithRed:0.01 green:0.09 blue:0.16 alpha:1.0] : nil;
+	_icon.tintColor = ink ? ink : cyan();
+	const BOOL textOnly = (_def->kind == KIND_NUMBER || _def->kind == KIND_SETGROUP);
+	_label.textColor = ink ? ink : (textOnly ? cyan() : [UIColor colorWithWhite:0.96 alpha:1.0]);
+	void (^apply)(void) = ^{
+		self->_lit.alpha = on ? 1.0 : 0.0;
+	};
+	if (animated && !on) {
+		[UIView animateWithDuration:0.28 animations:apply];
+	} else {
+		apply();
+	}
+	_glow.hidden = !on;
 }
 
 - (void)setLatched:(BOOL)on
 {
 	_latched = on;
-	_glow.hidden = !on;
+	[self updateLookAnimated:YES];
 }
 
 - (void)setHighlighted:(BOOL)highlighted
 {
 	[super setHighlighted:highlighted];
-	self.alpha = highlighted ? 0.7 : 1.0;
+	[self updateLookAnimated:YES];
 }
 
 @end
