@@ -1260,29 +1260,35 @@ void SDL3GameEngine::update(void)
 			gxHotkeyOverlayInit(m_SDLWindow);
 			s_overlayCreated = true;
 		}
+		// The buttons stay out of the way of the game's own menus (Options / Exit / Return to game).
+		bool menuOpen = false;
+		if (TheInGameUI && TheInGameUI->isQuitMenuVisible()) {
+			menuOpen = true;
+		} else if (TheWindowManager) {
+			GameWindow *optionsWin = TheWindowManager->winGetWindowFromId(nullptr, NAMEKEY("OptionsMenu.wnd:OptionsMenuParent"));
+			menuOpen = (optionsWin != nullptr && !optionsWin->winIsHidden());
+		}
 		const bool inMatch = TheGameLogic && TheGameLogic->isInGame() &&
-			GameLogic::isInInteractiveGame(TheGameLogic->getGameMode());
+			GameLogic::isInInteractiveGame(TheGameLogic->getGameMode()) && !menuOpen;
 		if (s_overlayCreated && (int)inMatch != s_overlayShown) {
 			gxHotkeyOverlaySetVisible(inMatch);
 			s_overlayShown = (int)inMatch;
 		}
-		// Put the quick buttons right above the money / power bars (the game's own windows).
+		// Put the quick buttons right above the minimap (the game's own radar window), centred over it.
 		if (s_overlayCreated && inMatch && TheWindowManager && TheDisplay && m_SDLWindow) {
 			int winW = 0, winH = 0;
 			SDL_GetWindowSize(m_SDLWindow, &winW, &winH);
-			float left = -1.0f, top = -1.0f;
-			const char *names[2] = { "ControlBar.wnd:MoneyDisplay", "ControlBar.wnd:PowerWindow" };
-			for (int n = 0; n < 2 && winW > 0 && TheDisplay->getWidth() > 0; ++n) {
-				GameWindow *w = TheWindowManager->winGetWindowFromId(nullptr, NAMEKEY(names[n]));
-				if (!w || w->winIsHidden()) continue;
-				ICoord2D pos;
-				w->winGetScreenPosition(&pos.x, &pos.y);
-				const float x = (float)pos.x * (float)winW / (float)TheDisplay->getWidth();
-				const float y = (float)pos.y * (float)winH / (float)TheDisplay->getHeight();
-				if (left < 0.0f || x < left) left = x;
-				if (top < 0.0f || y < top) top = y;
+			float left = -1.0f, top = -1.0f, width = 0.0f;
+			GameWindow *radarWin = TheWindowManager->winGetWindowFromId(nullptr, NAMEKEY("ControlBar.wnd:LeftHUD"));
+			if (radarWin && !radarWin->winIsHidden() && winW > 0 && TheDisplay->getWidth() > 0) {
+				ICoord2D pos, size;
+				radarWin->winGetScreenPosition(&pos.x, &pos.y);
+				radarWin->winGetSize(&size.x, &size.y);
+				left = (float)pos.x * (float)winW / (float)TheDisplay->getWidth();
+				top = (float)pos.y * (float)winH / (float)TheDisplay->getHeight();
+				width = (float)size.x * (float)winW / (float)TheDisplay->getWidth();
 			}
-			gxHotkeyOverlaySetQuickAnchor(left, top);
+			gxHotkeyOverlaySetQuickAnchor(left, top, width);
 		}
 	}
 

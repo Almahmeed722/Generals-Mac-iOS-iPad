@@ -210,7 +210,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 + (instancetype)shared;
 - (void)installInWindow:(UIWindow *)window;
 - (void)setVisible:(BOOL)visible;
-- (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top;
+- (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top width:(CGFloat)width;
 - (void)tapDone;
 @end
 
@@ -227,7 +227,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	BOOL _groupsOpen;
 	BOOL _setGroupNext;
 	BOOL _installed;
-	CGFloat _anchorLeft, _anchorTop;
+	CGFloat _anchorLeft, _anchorTop, _anchorWidth;
 }
 
 + (instancetype)shared
@@ -354,7 +354,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	for (int i = 0; i < kKeyCount; ++i) if (kKeys[i].place == PLACE_QUICK) ++quickCount;
 	const CGFloat quickW = quickCount * qs + (quickCount - 1) * gap + 2 * 6.0;
 	const CGFloat quickH = qs + 2 * 6.0;
-	CGFloat quickX = (_anchorLeft >= 0) ? _anchorLeft : (safe.left + 12.0);
+	CGFloat quickX = (_anchorLeft >= 0) ? (_anchorLeft + (_anchorWidth - quickW) * 0.5) : (safe.left + 12.0);
 	CGFloat quickY = (_anchorTop >= 0) ? (_anchorTop - quickH - 6.0) : (H - safe.bottom - 170.0);
 	if (quickX + quickW > W - safe.right) quickX = W - safe.right - quickW;
 	if (quickX < safe.left) quickX = safe.left;
@@ -406,11 +406,12 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	[_groupTab setImage:[UIImage systemImageNamed:(_groupsOpen ? @"chevron.up" : @"chevron.down") withConfiguration:cfg] forState:UIControlStateNormal];
 }
 
-- (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top
+- (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top width:(CGFloat)width
 {
-	if (fabs(left - _anchorLeft) < 0.5 && fabs(top - _anchorTop) < 0.5) return;
+	if (fabs(left - _anchorLeft) < 0.5 && fabs(top - _anchorTop) < 0.5 && fabs(width - _anchorWidth) < 0.5) return;
 	_anchorLeft = left;
 	_anchorTop = top;
+	_anchorWidth = width;
 	[self layoutAll];
 }
 
@@ -554,9 +555,9 @@ void gxHotkeyOverlaySetVisible(bool visible)
 	[[GXHotkeyController shared] setVisible:visible ? YES : NO];
 }
 
-void gxHotkeyOverlaySetQuickAnchor(float left, float top)
+void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width)
 {
-	[[GXHotkeyController shared] setQuickAnchorLeft:left top:top];
+	[[GXHotkeyController shared] setQuickAnchorLeft:left top:top width:width];
 }
 
 void gxHotkeyNotifyTapDone()

@@ -15,8 +15,8 @@ struct SDL_Window;
 // Implemented in iOSHotkeyOverlay.mm
 void gxHotkeyOverlayInit(SDL_Window *window);
 void gxHotkeyOverlaySetVisible(bool visible);
-// Top-left of the money / power bars in window points (negative = unknown); the quick strip sits above it.
-void gxHotkeyOverlaySetQuickAnchor(float left, float top);
+// Left, top and width of the minimap in window points (negative left = unknown); the quick strip sits centred above it.
+void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width);
 void gxHotkeyNotifyTapDone();
 
 // Implemented in SDL3GameEngine.cpp
