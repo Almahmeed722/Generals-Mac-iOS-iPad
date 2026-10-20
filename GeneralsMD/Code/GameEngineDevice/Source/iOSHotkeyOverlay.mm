@@ -565,4 +565,37 @@ void gxHotkeyNotifyTapDone()
 	[[GXHotkeyController shared] tapDone];
 }
 
+// ---------------------------------------------------------------------------
+// Background time: when the app leaves the foreground (answering a call, switching app) iOS normally
+// freezes it within seconds. A background task asks for up to ~30 s, so the game's network keeps being
+// serviced and the other players do not count us as gone.
+static UIBackgroundTaskIdentifier g_bgTask = UIBackgroundTaskInvalid;
+
+static void gxRunOnMain(void (^block)(void))
+{
+	if ([NSThread isMainThread]) block();
+	else dispatch_async(dispatch_get_main_queue(), block);
+}
+
+void gxBackgroundTaskBegin()
+{
+	gxRunOnMain(^{
+		if (g_bgTask != UIBackgroundTaskInvalid) return;
+		g_bgTask = [[UIApplication sharedApplication] beginBackgroundTaskWithName:@"GeneralsNetwork" expirationHandler:^{
+			UIBackgroundTaskIdentifier t = g_bgTask;
+			g_bgTask = UIBackgroundTaskInvalid;
+			if (t != UIBackgroundTaskInvalid) [[UIApplication sharedApplication] endBackgroundTask:t];
+		}];
+	});
+}
+
+void gxBackgroundTaskEnd()
+{
+	gxRunOnMain(^{
+		UIBackgroundTaskIdentifier t = g_bgTask;
+		g_bgTask = UIBackgroundTaskInvalid;
+		if (t != UIBackgroundTaskInvalid) [[UIApplication sharedApplication] endBackgroundTask:t];
+	});
+}
+
 #endif // TARGET_OS_IPHONE

@@ -110,10 +110,15 @@ static bool SDLCALL iosLifecycleWatcher(void *userdata, SDL_Event *event)
 {
 	switch (event->type) {
 		case SDL_EVENT_WILL_ENTER_BACKGROUND:
+			// Ask iOS for extra running time (about 30 s) so a multiplayer game survives a short call or app switch.
+			gxBackgroundTaskBegin();
+			s_appBackgrounded.store(true);
+			break;
 		case SDL_EVENT_DID_ENTER_BACKGROUND:
 			s_appBackgrounded.store(true);
 			break;
 		case SDL_EVENT_DID_ENTER_FOREGROUND:
+			gxBackgroundTaskEnd();
 			s_appBackgrounded.store(false);
 			break;
 		// Resign/become active. On iOS, SDL maps applicationWillResignActive ->
@@ -1238,6 +1243,12 @@ void SDL3GameEngine::update(void)
 	// across repeated suspend/switcher cycles, crashes MoltenVK. Keep polling so
 	// we still catch the resume events; just don't touch the GPU.
 	if (iosShouldPauseRendering()) {
+		// iOS has the screen (incoming call, banner, notification shade, app switcher): the picture and the
+		// simulation wait, but keep the multiplayer connection serviced (the game's own "lite update", the
+		// same one used on loading screens) so the other players still hear from us and do not drop us.
+		if (TheNetwork) {
+			TheNetwork->liteupdate();
+		}
 		SDL_Delay(50);
 		return;
 	}

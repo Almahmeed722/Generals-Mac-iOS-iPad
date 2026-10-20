@@ -18,6 +18,9 @@ void gxHotkeyOverlaySetVisible(bool visible);
 // Left, top and width of the minimap in window points (negative left = unknown); the quick strip sits centred above it.
 void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width);
 void gxHotkeyNotifyTapDone();
+// Extra running time from iOS while the app is in the background (keeps a multiplayer game connected for a short while).
+void gxBackgroundTaskBegin();
+void gxBackgroundTaskEnd();
 
 // Implemented in SDL3GameEngine.cpp
 void gxHotkeySendKey(int scancode, bool down);
