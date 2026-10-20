@@ -198,7 +198,7 @@ struct TouchState {
 TouchState s_touch;
 
 const Uint64 LONG_PRESS_MS = 600;
-const Uint64 RALLY_HOLD_MS = 2000;     // hold this long to give a building a rally / waypoint
+const Uint64 RALLY_HOLD_MS = 1000;     // hold this long to give a building a rally / waypoint
 const Uint64 HOLD_SELECT_MS = 220;     // finger1 must have been still this long before finger2 means "select"
 const Uint64 DOUBLE_TAP_MS = 350;
 const Uint64 PLACE_ANCHOR_MS = 40;     // placing a building: the position is fixed ~2 frames after the finger lands (so the game has seen the cursor there); dragging then turns it at once
