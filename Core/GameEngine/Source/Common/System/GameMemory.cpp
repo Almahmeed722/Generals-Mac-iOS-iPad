@@ -48,6 +48,9 @@
 
 // USER INCLUDES
 #include "Common/GameMemory.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#endif
 #include "Common/CriticalSection.h"
 #include "Common/Errors.h"
 #include "Common/GlobalData.h"
@@ -3272,6 +3275,28 @@ void STLSpecialAlloc::deallocate(void* __p, size_t)
 	TheDynamicMemoryAllocator->freeBytes(__p);
 }
 
+#if defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+// iOS: plain malloc/free for global new/delete. Inside container apps (zContainer / LiveContainer) the game is
+// loaded as a library, so libc++'s own operator delete and these overrides get mixed: memory from the pool
+// allocator was freed with free() ("pointer being freed was not allocated"). One allocator for everything avoids it.
+#include <cstdlib>
+#include <new>
+static void *gxAlloc(size_t size)
+{
+	++theLinkTester;
+	void *p = malloc(size ? size : 1);
+	if (!p) throw std::bad_alloc();
+	return p;
+}
+void *operator new(size_t size) { return gxAlloc(size); }
+void *operator new[](size_t size) { return gxAlloc(size); }
+void operator delete(void *p) { ++theLinkTester; free(p); }
+void operator delete[](void *p) { ++theLinkTester; free(p); }
+void *operator new(size_t size, const char *, int) { return gxAlloc(size); }
+void *operator new[](size_t size, const char *, int) { return gxAlloc(size); }
+void operator delete(void *p, const char *, int) { ++theLinkTester; free(p); }
+void operator delete[](void *p, const char *, int) { ++theLinkTester; free(p); }
+#else
 //-----------------------------------------------------------------------------
 /**
 	overload for global operator new; send requests to TheDynamicMemoryAllocator.
@@ -3375,6 +3400,7 @@ void operator delete[](void * p, const char *, int)
 	DEBUG_ASSERTCRASH(TheDynamicMemoryAllocator != nullptr, ("must init memory manager before calling global operator delete"));
 	TheDynamicMemoryAllocator->freeBytes(p);
 }
+#endif // iOS malloc/free global new/delete
 
 //-----------------------------------------------------------------------------
 // C++17 aligned operator new/delete — required on non-Windows platforms where
