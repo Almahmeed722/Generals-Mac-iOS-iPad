@@ -957,6 +957,10 @@ DECLARE_PERF_TIMER(GameEngine_update)
 /** -----------------------------------------------------------------------------------------------
  * Update the game engine by updating the GameClient and GameLogic singletons.
  */
+// Replay playback speed set by the on-screen speed buttons (iOS): 1 = normal. 2 uses the fast mode (one logic step per
+// rendered frame); 4 and 8 run extra logic steps in the same frame.
+int g_gxReplaySpeed = 1;
+
 void GameEngine::update()
 {
 	USE_PERF_TIMER(GameEngine_update)
@@ -987,6 +991,14 @@ void GameEngine::update()
 		{
 			TheGameClient->step();
 			TheGameLogic->UPDATE();
+			if (g_gxReplaySpeed > 2 && TheGameLogic->isInReplayGame())
+			{
+				for (int extra = 2; extra < g_gxReplaySpeed; extra += 2)
+				{
+					TheGameClient->step();
+					TheGameLogic->UPDATE();
+				}
+			}
 		}
 		else if (canUpdateScript)
 		{

@@ -1106,6 +1106,15 @@ void gxHotkeySetPointMode(bool on)
 	s_pointMode = on;
 }
 
+extern int g_gxReplaySpeed; // GameEngine.cpp
+void gxHotkeySetReplaySpeed(int speed)
+{
+	g_gxReplaySpeed = (speed < 1) ? 1 : (speed > 8 ? 8 : speed);
+	if (TheWritableGlobalData) {
+		TheWritableGlobalData->m_TiVOFastMode = (g_gxReplaySpeed >= 2) ? 1 : 0;
+	}
+}
+
 void gxHotkeyCancel()
 {
 	if (!TheSDL3Window) {
@@ -1390,6 +1399,14 @@ void SDL3GameEngine::update(void)
 		if (s_overlayCreated && (int)inMatch != s_overlayShown) {
 			gxHotkeyOverlaySetVisible(inMatch);
 			s_overlayShown = (int)inMatch;
+		}
+		{
+			static int s_replayShown = -1;
+			const int inReplay = (inMatch && TheGameLogic && TheGameLogic->isInReplayGame()) ? 1 : 0;
+			if (s_overlayCreated && inReplay != s_replayShown) {
+				gxHotkeyOverlaySetReplay(inReplay != 0);
+				s_replayShown = inReplay;
+			}
 		}
 		// Put the quick buttons right above the minimap (the game's own radar window), centred over it.
 		if (s_overlayCreated && inMatch && TheWindowManager && TheDisplay && m_SDLWindow) {

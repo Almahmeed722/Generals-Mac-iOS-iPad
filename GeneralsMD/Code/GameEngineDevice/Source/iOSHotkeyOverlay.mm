@@ -33,11 +33,12 @@ enum KeyKind {
 	KIND_SETGROUP,  // next number button creates a control group instead of selecting it
 	KIND_POINT,     // toggle: the next tap on empty ground sets the selected building's gathering point
 	KIND_NUMBER,    // group number 1-9
-	KIND_ACTION     // calls an engine helper
+	KIND_ACTION,    // calls an engine helper
+	KIND_REPLAY     // replay playback speed (1x 2x 4x 8x), one lit at a time
 };
 
 enum Action { ACT_ARMY = 1, ACT_AIR = 2, ACT_RESET_VIEW = 3, ACT_CANCEL = 4, ACT_MORE = 5 };
-enum Place { PLACE_SIDE = 0, PLACE_QUICK = 1, PLACE_GROUPS = 2, PLACE_MORE = 3 };
+enum Place { PLACE_SIDE = 0, PLACE_QUICK = 1, PLACE_GROUPS = 2, PLACE_MORE = 3, PLACE_REPLAY = 4 };
 // Movable / resizable groups
 enum Group { GROUP_SIDE = 0, GROUP_QUICK = 1, GROUP_NUMBERS = 2, GROUP_COUNT = 3 };
 
@@ -85,6 +86,12 @@ const KeyDef kKeys[] = {
 	{ "Queue path", "point.topleft.down.curvedto.point.bottomright.up", KIND_TOGGLE,  SDL_SCANCODE_LALT,   PLACE_MORE },
 	{ "Chat",       "bubble.left.fill",                     KIND_KEY,     SDL_SCANCODE_RETURN, PLACE_MORE },
 	{ "Team chat",  "bubble.left.and.bubble.right.fill",    KIND_KEY,     SDL_SCANCODE_BACKSPACE, PLACE_MORE },
+
+	// replay speed (shown only while a replay is playing)
+	{ "1x", "", KIND_REPLAY, 1, PLACE_REPLAY },
+	{ "2x", "", KIND_REPLAY, 2, PLACE_REPLAY },
+	{ "4x", "", KIND_REPLAY, 4, PLACE_REPLAY },
+	{ "8x", "", KIND_REPLAY, 8, PLACE_REPLAY },
 };
 const int kKeyCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
 
@@ -151,7 +158,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	}
 
 	// The number and Ctrl buttons show only big text; the others an icon with a small name under it.
-	const BOOL textOnly = (def->kind == KIND_NUMBER || def->kind == KIND_SETGROUP);
+	const BOOL textOnly = (def->kind == KIND_NUMBER || def->kind == KIND_SETGROUP || def->kind == KIND_REPLAY);
 	if (!textOnly) {
 		_icon = [[UIImageView alloc] initWithFrame:CGRectZero];
 		_icon.contentMode = UIViewContentModeScaleAspectFit;
@@ -184,7 +191,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	}
 	_glow.frame = CGRectInset(self.bounds, 4, 4);
 
-	const BOOL textOnly = (_def->kind == KIND_NUMBER || _def->kind == KIND_SETGROUP);
+	const BOOL textOnly = (_def->kind == KIND_NUMBER || _def->kind == KIND_SETGROUP || _def->kind == KIND_REPLAY);
 	// The lit face of the button artwork starts ~6% inside the picture: everything is centred in it, and the
 	// text is kept inside it (long names like "Same type" shrink instead of running over).
 	const CGFloat faceInset = w * 0.09;
@@ -217,7 +224,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	const BOOL on = self.highlighted || _latched;
 	UIColor *ink = on ? [UIColor colorWithRed:0.01 green:0.09 blue:0.16 alpha:1.0] : nil;
 	_icon.tintColor = ink ? ink : cyan();
-	const BOOL textOnly = (_def->kind == KIND_NUMBER || _def->kind == KIND_SETGROUP);
+	const BOOL textOnly = (_def->kind == KIND_NUMBER || _def->kind == KIND_SETGROUP || _def->kind == KIND_REPLAY);
 	_label.textColor = ink ? ink : (textOnly ? cyan() : [UIColor colorWithWhite:0.96 alpha:1.0]);
 	void (^apply)(void) = ^{
 		self->_lit.alpha = on ? 1.0 : 0.0;
@@ -271,6 +278,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 - (void)pointModeConsumed;
 - (void)tapDone;
 - (void)releaseToggles;
+- (void)setReplayMode:(BOOL)on;
 @end
 
 @implementation GXHotkeyController {
@@ -280,6 +288,8 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	UIButton *_tab;        // side bar arrow
 	UIView *_quick;        // quick strip above the minimap
 	UIView *_groups;       // control group strip at the top
+	UIView *_replay;       // replay speed buttons (only while a replay is playing)
+	BOOL _replayMode;
 	UIButton *_groupTab;   // arrow that folds the group strip
 	NSMutableArray<GXKeyButton *> *_buttons;
 	BOOL _open;
@@ -314,6 +324,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	switch (place) {
 		case PLACE_QUICK: return _quick;
 		case PLACE_GROUPS: return _groups;
+		case PLACE_REPLAY: return _replay;
 		default: return _scroll; // side + more
 	}
 }
@@ -422,6 +433,10 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	[_root addSubview:_groups];
 	_groupsOpen = YES;
 
+	_replay = [self makePanel];
+	_replay.hidden = YES;
+	[_root addSubview:_replay];
+
 	for (int i = 0; i < kKeyCount; ++i) {
 		GXKeyButton *b = [[GXKeyButton alloc] initWithFrame:CGRectMake(0, 0, 50, 50) def:&kKeys[i] index:i];
 		[b addTarget:self action:@selector(keyDown:) forControlEvents:UIControlEventTouchDown];
@@ -518,7 +533,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	const CGFloat W = _root.bounds.size.width, H = _root.bounds.size.height;
 	const CGFloat gap = 6.0, inset = 8.0;
 	const BOOL barOpen = _open || _edit;
-	const BOOL groupsOpen = _groupsOpen || _edit;
+	const BOOL groupsOpen = (_groupsOpen || _edit) && !_replayMode;
 
 	// ---- side bar ----
 	const CGFloat size = round((pad ? 64.0 : 46.0) * _scale[GROUP_SIDE]);
@@ -564,8 +579,15 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	_groups.frame = groupsF;
 	_groups.hidden = !groupsOpen;
 
+	// ---- replay speed strip (top left, under the gear) ----
+	const CGFloat rs = pad ? 46.0 : 38.0;
+	const CGFloat replayW = 4 * rs + 3 * 4.0 + 2 * 6.0;
+	const CGFloat replayH = rs + 2 * 5.0;
+	_replay.frame = CGRectMake(safe.left + 8.0, safe.top + 30.0 + 44.0, replayW, replayH);
+	_replay.hidden = !_replayMode || _edit;
+
 	// ---- buttons ----
-	int sideIdx = 0, quickIdx = 0, groupIdx = 0;
+	int sideIdx = 0, quickIdx = 0, groupIdx = 0, replayIdx = 0;
 	for (int i = 0; i < kKeyCount; ++i) {
 		GXKeyButton *b = _buttons[i];
 		b.userInteractionEnabled = !_edit;
@@ -588,6 +610,10 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 				b.frame = CGRectMake(6.0 + groupIdx * (gs + 4.0), 5.0, gs, gs);
 				++groupIdx;
 				break;
+			case PLACE_REPLAY:
+				b.frame = CGRectMake(6.0 + replayIdx * (rs + 4.0), 5.0, rs, rs);
+				++replayIdx;
+				break;
 		}
 	}
 
@@ -603,7 +629,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	const CGFloat gtY = _groupsOpen ? (CGRectGetMaxY(groupsF) - 1.0) : groupsF.origin.y;
 	_groupTab.frame = CGRectMake(CGRectGetMidX(groupsF) - gtW * 0.5, gtY, gtW, gtH);
 	[_groupTab setImage:[UIImage systemImageNamed:(_groupsOpen ? @"chevron.up" : @"chevron.down") withConfiguration:cfg] forState:UIControlStateNormal];
-	_groupTab.hidden = _edit;
+	_groupTab.hidden = _edit || _replayMode;
 
 	// ---- edit mode controls ----
 	UIImageSymbolConfiguration *gcfg = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
@@ -723,6 +749,18 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled) [self saveConfig];
 }
 
+// Replay playback: show the speed buttons (starting at 1x); leaving the replay puts the speed back to normal.
+- (void)setReplayMode:(BOOL)on
+{
+	if (!_root || _replayMode == on) return;
+	_replayMode = on;
+	gxHotkeySetReplaySpeed(1);
+	for (GXKeyButton *b in _buttons) {
+		if (kKeys[b.defIndex].kind == KIND_REPLAY) b.latched = (on && kKeys[b.defIndex].code == 1);
+	}
+	[self layoutAll];
+}
+
 - (void)setVisible:(BOOL)visible
 {
 	if (!_root) return;
@@ -802,10 +840,16 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 			b.latched = !b.latched;
 			gxHotkeySetPointMode(b.latched ? true : false);
 			break;
+		case KIND_REPLAY:
+			gxHotkeySetReplaySpeed(d.code);
+			for (GXKeyButton *other in _buttons) {
+				if (kKeys[other.defIndex].kind == KIND_REPLAY) other.latched = (other == b);
+			}
+			break;
 		case KIND_ACTION:
 			if (d.code == ACT_MORE) {
+				// opens / closes the extra buttons; the button itself is not left lit
 				_moreOpen = !_moreOpen;
-				b.latched = _moreOpen;
 				[self layoutAll];
 			} else {
 				[self runAction:d.code];
@@ -893,6 +937,11 @@ void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width)
 void gxHotkeyNotifyTapDone()
 {
 	[[GXHotkeyController shared] tapDone];
+}
+
+void gxHotkeyOverlaySetReplay(bool replay)
+{
+	[[GXHotkeyController shared] setReplayMode:replay ? YES : NO];
 }
 
 void gxHotkeyReleaseQueuePath()

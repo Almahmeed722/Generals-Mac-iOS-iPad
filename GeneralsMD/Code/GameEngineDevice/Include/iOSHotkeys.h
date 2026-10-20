@@ -22,6 +22,8 @@ void gxHotkeyNotifyTapDone();
 void gxHotkeyPointModeConsumed();
 // A finger touched the control bar / a menu: let go of a latched "Queue path" (Alt) so it is not left held down.
 void gxHotkeyReleaseQueuePath();
+// Replay playback: show the speed buttons (1x 2x 4x 8x) only while a replay is running.
+void gxHotkeyOverlaySetReplay(bool replay);
 // Extra running time from iOS while the app is in the background (keeps a multiplayer game connected for a short while).
 void gxBackgroundTaskBegin();
 void gxBackgroundTaskEnd();
@@ -32,6 +34,7 @@ void gxHotkeyCancel();      // cancel a pending command / placement, otherwise d
 void gxHotkeySetPointMode(bool on); // "Point": the next tap on empty ground sets where the selected building's new units gather
 void gxHotkeyResetView();   // camera back to the normal direction, tilt and zoom
 void gxHotkeySelectArmy();  // all ground combat units (soldiers, tanks), not inside buildings
-void gxHotkeySelectAir();   // all combat aircraft
+void gxHotkeySelectAir();
+void gxHotkeySetReplaySpeed(int speed); // replay playback speed: 1, 2, 4 or 8 times normal   // all combat aircraft
 
 #endif
