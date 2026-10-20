@@ -166,6 +166,7 @@ struct TouchState {
 		MINIMAP,     // finger on the minimap: the camera follows it
 		TARGETING,   // aiming a special power / placing a building: cursor follows the finger
 		UIDRAG,      // finger on a menu / control-bar window: a drag stays a normal mouse drag (sliders, lists)
+		PLACE_DRAG,  // placing a building: the position is fixed (button held), dragging turns the building, release builds
 		LONGPRESSED  // a long press already fired, swallow the rest of the touch
 	};
 
@@ -181,6 +182,8 @@ struct TouchState {
 	// hold-select
 	float selDownX = 0.0f, selDownY = 0.0f, selLastX = 0.0f, selLastY = 0.0f;
 	bool selActive = false;
+	Uint64 lastMoveTicks = 0;           // last time the finger moved noticeably while aiming (to detect it resting)
+	float lastMoveX = 0.0f, lastMoveY = 0.0f;
 	// two-finger tap detection
 	Uint64 panStartTicks = 0;
 	float panTravel = 0.0f;
@@ -192,6 +195,7 @@ const Uint64 LONG_PRESS_MS = 600;
 const Uint64 RALLY_HOLD_MS = 2000;     // hold this long to give a building a rally / waypoint
 const Uint64 HOLD_SELECT_MS = 220;     // finger1 must have been still this long before finger2 means "select"
 const Uint64 DOUBLE_TAP_MS = 350;
+const Uint64 PLACE_ANCHOR_MS = 400;    // placing a building: a finger resting this long fixes the position; dragging then turns it
 const float DOUBLE_TAP_DIST_PX = 48.0f;
 const float PINCH_STEP_RATIO = 0.05f;  // 5% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 14.0f;  // jitter below this keeps a tap a tap (a thumb moves ~10pt while tapping)
@@ -352,6 +356,13 @@ bool gxInTargetingMode()
 	return TheInGameUI->getGUICommand() != nullptr || TheInGameUI->getPendingPlaceType() != nullptr;
 }
 
+// True while the player is placing a building (not a special power): then a resting finger fixes the
+// position and dragging turns the building, exactly like press-and-drag with a mouse.
+bool gxPlacingBuilding()
+{
+	return TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr;
+}
+
 // Convert window points to the game's internal screen pixels.
 ICoord2D gxToScreen(float px, float py, int winW, int winH)
 {
@@ -490,6 +501,16 @@ void flushPendingTap(SDL3Mouse *mouse, SDL_Window *window)
 	gxHotkeyNotifyTapDone();
 }
 
+// Fix the building at the finger's position (the cursor is already there): the left button goes down now
+// and stays down while the finger drags to turn the building; lifting the finger places it.
+void startPlacementDrag(SDL3Mouse *mouse, SDL_Window *window, float x, float y)
+{
+	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, x, y);
+	sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, x, y, SDL_BUTTON_LEFT);
+	s_touch.phase = TouchState::PLACE_DRAG;
+	GXTOUCH_LOG("building position fixed at %.0f,%.0f: drag to turn it, lift to build\n", x, y);
+}
+
 void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &event)
 {
 	int winW = 0, winH = 0;
@@ -594,6 +615,9 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				// click happens when the finger lifts.
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 				s_touch.phase = TouchState::TARGETING;
+				s_touch.lastMoveTicks = SDL_GetTicks();
+				s_touch.lastMoveX = px;
+				s_touch.lastMoveY = py;
 			}
 			else if (s_touch.battlefield &&
 			         moved >= ((SDL_GetTicks() - s_touch.downTicks) < 250 ? TAP_DEAD_ZONE_PX : RESTED_SWIPE_PX)) {
@@ -618,9 +642,16 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				s_touch.phase = TouchState::UIDRAG;
 			}
 		}
-		else if ((s_touch.phase == TouchState::TARGETING || s_touch.phase == TouchState::UIDRAG) &&
+		else if ((s_touch.phase == TouchState::TARGETING || s_touch.phase == TouchState::UIDRAG ||
+		          s_touch.phase == TouchState::PLACE_DRAG) &&
 		         event.tfinger.fingerID == s_touch.finger1) {
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+			if (s_touch.phase == TouchState::TARGETING &&
+			    SDL_fabsf(px - s_touch.lastMoveX) + SDL_fabsf(py - s_touch.lastMoveY) >= 4.0f) {
+				s_touch.lastMoveTicks = SDL_GetTicks();
+				s_touch.lastMoveX = px;
+				s_touch.lastMoveY = py;
+			}
 		}
 		else if (s_touch.phase == TouchState::HOLDSELECT && event.tfinger.fingerID == s_touch.finger2) {
 			s_touch.selLastX = px;
@@ -696,6 +727,13 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
 				queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
 				GXTOUCH_LOG("tap click queued at %.0f,%.0f (battlefield=%d)\n", s_touch.downX, s_touch.downY, (int)s_touch.battlefield);
+				break;
+			case TouchState::PLACE_DRAG:
+				// The building is placed (facing the dragged direction) when the left button is released.
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
+				s_postPlaceFrames = 12; // afterwards the builder is deselected, once the placement went through
+				gxHotkeyNotifyTapDone();
+				GXTOUCH_LOG("building released at %.0f,%.0f\n", px, py);
 				break;
 			case TouchState::TARGETING:
 				// Aiming ends where the finger lifts: put the cursor there, then click.
@@ -874,8 +912,12 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 			break;
 		}
 		case TouchState::TARGETING:
-			// A held target near the edge pulls the camera along.
-			autoScrollAtEdges(s_touch.f1x, s_touch.f1y, winW, winH);
+			if (gxPlacingBuilding() && (SDL_GetTicks() - s_touch.lastMoveTicks) >= PLACE_ANCHOR_MS) {
+				startPlacementDrag(mouse, window, s_touch.lastX, s_touch.lastY);
+			} else {
+				// A held target near the edge pulls the camera along.
+				autoScrollAtEdges(s_touch.f1x, s_touch.f1y, winW, winH);
+			}
 			break;
 		case TouchState::HOLDSELECT:
 			if (s_touch.selActive) {
@@ -883,7 +925,11 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 			}
 			break;
 		case TouchState::PENDING:
-			if (gxInTargetingMode()) {
+			if (gxPlacingBuilding() && (SDL_GetTicks() - s_touch.downTicks) >= PLACE_ANCHOR_MS) {
+				// A finger resting on the spot where the building should go: fix it there, then turn it.
+				startPlacementDrag(mouse, window, s_touch.downX, s_touch.downY);
+			}
+			else if (gxInTargetingMode()) {
 				autoScrollAtEdges(s_touch.f1x, s_touch.f1y, winW, winH);
 			}
 			break;
