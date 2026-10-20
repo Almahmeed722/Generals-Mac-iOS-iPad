@@ -26,6 +26,7 @@ enum KeyKind {
 	KIND_ONESHOT,   // latch: key held until the next map tap finishes (Add = Shift, Force fire = Ctrl)
 	KIND_TOGGLE,    // latch: key held until tapped again (Waypoint = Alt)
 	KIND_SETGROUP,  // next number button creates a control group instead of selecting it
+	KIND_POINT,     // toggle: the next tap on empty ground sets the selected building's gathering point
 	KIND_NUMBER,    // group number 1-9
 	KIND_ACTION     // calls an engine helper
 };
@@ -70,7 +71,8 @@ const KeyDef kKeys[] = {
 	{ "Attack move","scope",                                KIND_KEY,     SDL_SCANCODE_A, PLACE_SIDE },
 	{ "Add",        "plus.circle.fill",                     KIND_ONESHOT, SDL_SCANCODE_LSHIFT, PLACE_SIDE },
 	{ "Force fire", "flame.fill",                           KIND_ONESHOT, SDL_SCANCODE_LCTRL,  PLACE_SIDE },
-	{ "Waypoint",   "flag.fill",                            KIND_TOGGLE,  SDL_SCANCODE_LALT,   PLACE_SIDE },
+	{ "Queue path", "point.topleft.down.curvedto.point.bottomright.up", KIND_TOGGLE,  SDL_SCANCODE_LALT,   PLACE_SIDE },
+	{ "Point",      "mappin.and.ellipse",                   KIND_POINT,   0,                   PLACE_SIDE },
 	{ "Chat",       "bubble.left.fill",                     KIND_KEY,     SDL_SCANCODE_RETURN, PLACE_SIDE },
 	{ "Team chat",  "bubble.left.and.bubble.right.fill",    KIND_KEY,     SDL_SCANCODE_BACKSPACE, PLACE_SIDE },
 };
@@ -211,6 +213,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 - (void)installInWindow:(UIWindow *)window;
 - (void)setVisible:(BOOL)visible;
 - (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top width:(CGFloat)width;
+- (void)pointModeConsumed;
 - (void)tapDone;
 @end
 
@@ -451,6 +454,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 		b.latched = NO;
 	}
 	_setGroupNext = NO;
+	gxHotkeySetPointMode(false);
 }
 
 - (void)runAction:(int)action
@@ -487,6 +491,10 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 			_setGroupNext = !_setGroupNext;
 			b.latched = _setGroupNext;
 			break;
+		case KIND_POINT:
+			b.latched = !b.latched;
+			gxHotkeySetPointMode(b.latched ? true : false);
+			break;
 		case KIND_ACTION:
 			[self runAction:d.code];
 			break;
@@ -508,6 +516,14 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 				if (kKeys[other.defIndex].kind == KIND_SETGROUP) other.latched = NO;
 			}
 		}
+	}
+}
+
+// The engine used the "Point" mode for one tap: the button's light goes off.
+- (void)pointModeConsumed
+{
+	for (GXKeyButton *b in _buttons) {
+		if (kKeys[b.defIndex].kind == KIND_POINT) b.latched = NO;
 	}
 }
 
@@ -563,6 +579,11 @@ void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width)
 void gxHotkeyNotifyTapDone()
 {
 	[[GXHotkeyController shared] tapDone];
+}
+
+void gxHotkeyPointModeConsumed()
+{
+	[[GXHotkeyController shared] pointModeConsumed];
 }
 
 // ---------------------------------------------------------------------------

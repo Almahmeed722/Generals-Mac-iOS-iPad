@@ -239,6 +239,7 @@ struct PendingTap {
 };
 PendingTap s_tap;
 bool s_logObjectUnderOnce = false;
+bool s_pointMode = false;                // "Point" button: the next tap on empty ground sets the building's gathering point
 int s_postPlaceFrames = 0;               // frames left to watch for a finished building placement
 int s_shiftReleaseFrames = 0;            // frames until the helper Shift key is released
 Uint64 s_lastTapTicks = 0;               // for double-tap detection
@@ -724,6 +725,15 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				// the Cancel button) instead of silently moving the building's rally point. A 2 second hold
 				// sets the rally point / waypoint on purpose.
 				if (s_touch.battlefield && gxOnlyBuildingsSelected() && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
+					if (s_pointMode) {
+						// "Point" was switched on: this tap sets where the building's new units gather.
+						s_pointMode = false;
+						gxHotkeyPointModeConsumed();
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
+						queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
+						GXTOUCH_LOG("point set at %.0f,%.0f\n", s_touch.downX, s_touch.downY);
+						break;
+					}
 					if (TheInGameUI) {
 						TheInGameUI->deselectAllDrawables();
 					}
@@ -1020,6 +1030,11 @@ void gxHotkeySendKey(int scancode, bool down)
 
 // Cancel: a right click at mid-screen cancels a pending command or building placement, and otherwise
 // deselects (the game's default mouse scheme). Sent as a proper staged click.
+void gxHotkeySetPointMode(bool on)
+{
+	s_pointMode = on;
+}
+
 void gxHotkeyCancel()
 {
 	if (!TheSDL3Window) {

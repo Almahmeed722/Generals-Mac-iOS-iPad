@@ -18,6 +18,8 @@ void gxHotkeyOverlaySetVisible(bool visible);
 // Left, top and width of the minimap in window points (negative left = unknown); the quick strip sits centred above it.
 void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width);
 void gxHotkeyNotifyTapDone();
+// The engine used the "Point" mode for one tap: switch the button's light off.
+void gxHotkeyPointModeConsumed();
 // Extra running time from iOS while the app is in the background (keeps a multiplayer game connected for a short while).
 void gxBackgroundTaskBegin();
 void gxBackgroundTaskEnd();
@@ -25,6 +27,7 @@ void gxBackgroundTaskEnd();
 // Implemented in SDL3GameEngine.cpp
 void gxHotkeySendKey(int scancode, bool down);
 void gxHotkeyCancel();      // cancel a pending command / placement, otherwise deselect
+void gxHotkeySetPointMode(bool on); // "Point": the next tap on empty ground sets where the selected building's new units gather
 void gxHotkeyResetView();   // camera back to the normal direction, tilt and zoom
 void gxHotkeySelectArmy();  // all ground combat units (soldiers, tanks), not inside buildings
 void gxHotkeySelectAir();   // all combat aircraft
