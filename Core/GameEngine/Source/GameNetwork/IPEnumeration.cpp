@@ -100,7 +100,10 @@ EnumeratedIP * IPEnumeration::getAddresses()
 		// cellular (pdp_ip*), AirDrop (awdl*)... Only Wi-Fi / Ethernet can carry a LAN game. Using a VPN address made
 		// the lobby sweep a bogus subnet and hear its own messages looped back (the same player listed many times).
 		// So: Wi-Fi / Ethernet interfaces only, and en0 first.
-		for (int pass = 0; pass < 2; ++pass)
+		// pass 0: en0 (Wi-Fi); pass 1: other en* interfaces; pass 2: a Tailscale address (100.64.0.0/10 on a utun
+		// interface), listed LAST so it is never the default but can be picked in Options to play with someone
+		// in another home over the private Tailscale network (Direct Connect).
+		for (int pass = 0; pass < 3; ++pass)
 		for (struct ifaddrs *ifa = ifaddr; ifa != nullptr; ifa = ifa->ifa_next)
 		{
 			if (ifa->ifa_addr == nullptr || ifa->ifa_name == nullptr || ifa->ifa_addr->sa_family != AF_INET)
@@ -111,18 +114,21 @@ EnumeratedIP * IPEnumeration::getAddresses()
 			{
 				continue;
 			}
-			const bool isEn = (ifa->ifa_name[0] == 'e' && ifa->ifa_name[1] == 'n');
-			if (!isEn)
-			{
-				continue; // utun*, ipsec*, pdp_ip*, awdl*, llw*, bridge*, ...
-			}
-			const bool isEn0 = (ifa->ifa_name[2] == '0' && ifa->ifa_name[3] == 0);
-			if ((pass == 0) != isEn0)
-			{
-				continue; // pass 0: en0 only; pass 1: the other en* interfaces
-			}
 			const sockaddr_in *addr = reinterpret_cast<const sockaddr_in *>(ifa->ifa_addr);
 			const UnsignedInt hostAddr = ntohl(addr->sin_addr.s_addr);
+			const bool isEn = (ifa->ifa_name[0] == 'e' && ifa->ifa_name[1] == 'n');
+			const bool isTailscale = (ifa->ifa_name[0] == 'u' && ifa->ifa_name[1] == 't' && ifa->ifa_name[2] == 'u' && ifa->ifa_name[3] == 'n') &&
+				((hostAddr & 0xFFC00000u) == 0x64400000u);
+			if (!isEn && !isTailscale)
+			{
+				continue; // other utun* VPNs, ipsec*, pdp_ip*, awdl*, llw*, bridge*, ...
+			}
+			const bool isEn0 = (isEn && ifa->ifa_name[2] == '0' && ifa->ifa_name[3] == 0);
+			const int myPass = isTailscale ? 2 : (isEn0 ? 0 : 1);
+			if (pass != myPass)
+			{
+				continue;
+			}
 			if ((hostAddr >> 16) == 0xA9FE)
 			{
 				continue; // 169.254.x.x self-assigned: not connected to a network

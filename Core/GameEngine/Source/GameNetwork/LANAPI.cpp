@@ -223,7 +223,7 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 					m_transport->queueSend(slot->getIP(), lobbyPort, (unsigned char *)msg, sizeof(LANMessage));
 			}
 		}
-		else if (m_localIP != 0)
+		else if (m_localIP != 0 && (m_localIP & 0xFFC00000u) != 0x64400000u)
 		{
 			const UnsignedInt subnet = m_localIP & 0xFFFFFF00u;
 			for (UnsignedInt host = 1; host < 255; ++host)
