@@ -673,7 +673,7 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				}
 				// With only buildings selected, a quick tap on empty ground would silently move the
 				// building's rally point: ignore it (a 2 second hold does that on purpose).
-				if (gxOnlyBuildingsSelected() && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
+				if (s_touch.battlefield && gxOnlyBuildingsSelected() && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
 					break;
 				}
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
@@ -745,7 +745,10 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 		                    TheInGameUI->getPendingPlaceType() != nullptr);
 		// Two quick taps close together are a double click (selects every unit of that type on screen).
 		int clicks = 1;
-		if (s_tap.button == SDL_BUTTON_LEFT) {
+		int tapWinW = 0, tapWinH = 0;
+		SDL_GetWindowSize(window, &tapWinW, &tapWinH);
+		// Only on the battlefield: on menu / control-bar buttons a fast second tap stays a normal click.
+		if (s_tap.button == SDL_BUTTON_LEFT && gxTouchOnBattlefield(s_tap.x, s_tap.y, tapWinW, tapWinH)) {
 			const Uint64 now = SDL_GetTicks();
 			const float ddx = s_tap.x - s_lastTapX, ddy = s_tap.y - s_lastTapY;
 			if (s_lastTapTicks != 0 && (now - s_lastTapTicks) <= DOUBLE_TAP_MS &&
@@ -897,7 +900,7 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 	//     (rally / waypoint) after 2 s. Never while aiming a target, where a click would be wrong.
 	if (s_touch.phase == TouchState::PENDING && !gxInTargetingMode()) {
 		const Uint64 held = SDL_GetTicks() - s_touch.downTicks;
-		const bool buildingsOnly = gxOnlyBuildingsSelected();
+		const bool buildingsOnly = s_touch.battlefield && gxOnlyBuildingsSelected();
 		if (buildingsOnly) {
 			if (held >= RALLY_HOLD_MS && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
@@ -905,7 +908,7 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 				s_touch.phase = TouchState::LONGPRESSED;
 			}
 		}
-		else if (held >= LONG_PRESS_MS) {
+		else if (held >= LONG_PRESS_MS && s_touch.battlefield) {
 			// No LMB was sent yet (deferred), so this is a pure right-click.
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN,
