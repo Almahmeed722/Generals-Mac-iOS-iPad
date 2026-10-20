@@ -1222,7 +1222,7 @@ void SDL3GameEngine::update(void)
 		static bool s_zoomPatched = false;
 		if (!s_zoomPatched && TheWritableGlobalData && TheTacticalView && TheGameLogic &&
 		    TheGameLogic->isInGame() && GameLogic::isInInteractiveGame(TheGameLogic->getGameMode())) {
-			const Real wantedMax = 520.0f;
+			const Real wantedMax = 370.0f; // was 520: too far out shows the black map edge; 370 matches the best screenshot
 			if (TheWritableGlobalData->m_maxCameraHeight < wantedMax) {
 				TheWritableGlobalData->m_maxCameraHeight = wantedMax;
 			}
