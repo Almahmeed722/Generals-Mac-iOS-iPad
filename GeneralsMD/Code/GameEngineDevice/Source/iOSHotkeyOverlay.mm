@@ -48,7 +48,7 @@ const KeyDef kKeys[] = {
 	{ "Reset view", "arrow.triangle.2.circlepath",          KIND_ACTION,  ACT_RESET_VIEW, PLACE_QUICK },
 
 	// control groups (top strip)
-	{ "Save",       "square.and.arrow.down.fill",           KIND_SETGROUP,0,              PLACE_GROUPS },
+	{ "Ctrl",       "",                                     KIND_SETGROUP,0,              PLACE_GROUPS },
 	{ "1", "", KIND_NUMBER, SDL_SCANCODE_1, PLACE_GROUPS },
 	{ "2", "", KIND_NUMBER, SDL_SCANCODE_2, PLACE_GROUPS },
 	{ "3", "", KIND_NUMBER, SDL_SCANCODE_3, PLACE_GROUPS },
@@ -126,31 +126,48 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	[self addSubview:_glow];
 
 	const CGFloat w = frame.size.width, h = frame.size.height;
-	const BOOL numberOnly = (def->kind == KIND_NUMBER);
-	UIImage *symbol = nil;
-	if (def->symbol[0] != 0) {
-		UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:h * 0.36 weight:UIImageSymbolWeightSemibold];
-		symbol = [UIImage systemImageNamed:[NSString stringWithUTF8String:def->symbol] withConfiguration:cfg];
-	}
-	if (!numberOnly) {
-		_icon = [[UIImageView alloc] initWithFrame:CGRectMake(0, h * 0.14, w, h * 0.46)];
+	// The number and Ctrl buttons show only big text; the others an icon with a small name under it.
+	const BOOL textOnly = (def->kind == KIND_NUMBER || def->kind == KIND_SETGROUP);
+	// The lit face of the button artwork starts ~6% inside the picture: everything is centred in it,
+	// and the text is kept inside it (long names like "Same type" shrink instead of running over).
+	const CGFloat faceInset = w * 0.09;
+	const CGRect face = CGRectInset(self.bounds, faceInset, faceInset);
+
+	UIFont *font = [UIFont systemFontOfSize:(def->kind == KIND_NUMBER ? h * 0.46 : (textOnly ? h * 0.30 : h * 0.17)) weight:UIFontWeightBold];
+	_label = [[UILabel alloc] initWithFrame:face];
+	_label.text = [NSString stringWithUTF8String:def->label];
+	_label.textAlignment = NSTextAlignmentCenter;
+	_label.textColor = textOnly ? cyan() : [UIColor colorWithWhite:0.96 alpha:1.0];
+	_label.font = font;
+	_label.adjustsFontSizeToFitWidth = YES;
+	_label.minimumScaleFactor = 0.5;
+	_label.baselineAdjustment = UIBaselineAdjustmentAlignCenters;
+	_label.userInteractionEnabled = NO;
+
+	if (textOnly) {
+		// A label centres its whole line box (ascender to descender); shift it so the glyphs themselves
+		// sit exactly in the middle of the button.
+		const CGFloat dy = (font.capHeight + fabs(font.descender) - font.ascender) / 2.0;
+		_label.frame = CGRectOffset(face, 0, dy);
+	} else {
+		UIImage *symbol = nil;
+		if (def->symbol[0] != 0) {
+			UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:h * 0.30 weight:UIImageSymbolWeightSemibold];
+			symbol = [UIImage systemImageNamed:[NSString stringWithUTF8String:def->symbol] withConfiguration:cfg];
+		}
+		// icon + name are centred together, as one block, in the face
+		const CGFloat iconH = h * 0.34, labelH = h * 0.18, gap = h * 0.03;
+		const CGFloat top = (h - (iconH + gap + labelH)) * 0.5;
+		_icon = [[UIImageView alloc] initWithFrame:CGRectMake(face.origin.x, top, face.size.width, iconH)];
 		_icon.contentMode = UIViewContentModeScaleAspectFit;
 		_icon.tintColor = cyan();
 		_icon.image = [symbol imageWithRenderingMode:UIImageRenderingModeAlwaysTemplate];
 		_icon.userInteractionEnabled = NO;
 		[self addSubview:_icon];
+		_label.frame = CGRectMake(face.origin.x, top + iconH + gap, face.size.width, labelH);
 	}
-
-	// Number buttons show only a big number; the others a small name under the icon.
-	_label = [[UILabel alloc] initWithFrame:numberOnly ? CGRectInset(self.bounds, 2, 2) : CGRectMake(2, h * 0.62, w - 4, h * 0.26)];
-	_label.text = [NSString stringWithUTF8String:def->label];
-	_label.textAlignment = NSTextAlignmentCenter;
-	_label.textColor = numberOnly ? cyan() : [UIColor colorWithWhite:0.96 alpha:1.0];
-	_label.font = [UIFont systemFontOfSize:(numberOnly ? h * 0.5 : h * 0.19) weight:UIFontWeightBold];
-	_label.adjustsFontSizeToFitWidth = YES;
-	_label.minimumScaleFactor = 0.6;
-	_label.userInteractionEnabled = NO;
 	[self addSubview:_label];
+	(void)w;
 	return self;
 }
 
