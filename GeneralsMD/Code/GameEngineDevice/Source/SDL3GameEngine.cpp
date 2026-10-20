@@ -52,6 +52,7 @@
 #include "GameClient/View.h"
 #include "GameClient/Display.h"
 #include "GameClient/InGameUI.h"
+#include "GameNetwork/NetworkInterface.h"
 #include "GameClient/Shell.h"
 #include "Common/Radar.h"
 #include "Common/NameKeyGenerator.h"
