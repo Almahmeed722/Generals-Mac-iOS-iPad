@@ -195,6 +195,7 @@ const Uint64 DOUBLE_TAP_MS = 350;
 const float DOUBLE_TAP_DIST_PX = 48.0f;
 const float PINCH_STEP_RATIO = 0.05f;  // 5% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 14.0f;  // jitter below this keeps a tap a tap (a thumb moves ~10pt while tapping)
+const float RESTED_SWIPE_PX = 44.0f;   // a finger resting >0.25 s needs this much movement to count as a swipe
 const float GESTURE_DEADBAND_PX = 1.5f; // per-frame movement below this is finger noise
 const float ROTATE_GAIN = 1.6f;        // camera turns this many times faster than the fingers twist
 const float COAST_DECAY = 0.92f;       // camera keeps sliding after a quick flick, slowing by 8% per frame
@@ -202,6 +203,10 @@ const float COAST_START_MIN = 3.0f;    // world units per frame needed to start 
 const float COAST_STOP_MIN = 0.4f;
 const Uint64 TWO_FINGER_TAP_MS = 350;
 const float TWO_FINGER_TAP_TRAVEL_PX = 24.0f;
+
+// Short log of what the touch handler decides (generals-stderr.log): enough to see why a gesture did or did not fire.
+int s_touchLogBudget = 800;
+#define GXTOUCH_LOG(...) do { if (s_touchLogBudget > 0) { --s_touchLogBudget; fprintf(stderr, "[GX-TOUCH] " __VA_ARGS__); } } while (0)
 
 struct CamState {
 	bool hasPrev = false;
@@ -223,6 +228,7 @@ struct PendingTap {
 	bool wasPlacing = false;             // the click happened while a building was being placed
 };
 PendingTap s_tap;
+bool s_logObjectUnderOnce = false;
 int s_postPlaceFrames = 0;               // frames left to watch for a finished building placement
 int s_shiftReleaseFrames = 0;            // frames until the helper Shift key is released
 Uint64 s_lastTapTicks = 0;               // for double-tap detection
@@ -508,6 +514,7 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			s_touch.f1y = event.tfinger.y;
 			s_touch.downTicks = SDL_GetTicks();
 			s_touch.selActive = false;
+			s_logObjectUnderOnce = false;
 			// Move the cursor to the touch point NOW (motion clicks nothing, so the deferred-tap
 			// protection is intact). This lets the GUI process hover over the next frame(s) before
 			// the tap commits: hover-driven widgets (e.g. the Generals Challenge general buttons)
@@ -588,14 +595,19 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 				s_touch.phase = TouchState::TARGETING;
 			}
-			else if (moved >= TAP_DEAD_ZONE_PX && s_touch.battlefield) {
+			else if (s_touch.battlefield &&
+			         moved >= ((SDL_GetTicks() - s_touch.downTicks) < 250 ? TAP_DEAD_ZONE_PX : RESTED_SWIPE_PX)) {
 				// A swipe: the map follows the finger (applied once per frame in updateTouchLongPress).
+				// A finger that has been resting a while (e.g. holding for a rally point) drifts a few
+				// millimetres, so after 0.25 s only a clearly larger movement counts as a swipe.
+				const bool rested = (SDL_GetTicks() - s_touch.downTicks) >= 250;
 				s_cam.hasPrev = true;
-				s_cam.prevCx = s_touch.downX;
-				s_cam.prevCy = s_touch.downY;
+				s_cam.prevCx = rested ? px : s_touch.downX;
+				s_cam.prevCy = rested ? py : s_touch.downY;
 				s_cam.velX = s_cam.velY = 0.0f;
 				s_cam.coasting = false;
 				s_touch.phase = TouchState::GRABPAN;
+				GXTOUCH_LOG("swipe starts (moved %.0f pt after %u ms)\n", moved, (unsigned)(SDL_GetTicks() - s_touch.downTicks));
 			}
 			else if (moved >= TAP_DEAD_ZONE_PX) {
 				// A menu / control bar / dialog: keep the normal mouse drag (sliders, scroll bars, lists).
@@ -674,10 +686,12 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				// With only buildings selected, a quick tap on empty ground would silently move the
 				// building's rally point: ignore it (a 2 second hold does that on purpose).
 				if (s_touch.battlefield && gxOnlyBuildingsSelected() && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
+					GXTOUCH_LOG("tap ignored: only buildings selected and empty ground (hold 2 s for a rally point)\n");
 					break;
 				}
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
 				queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
+				GXTOUCH_LOG("tap click queued at %.0f,%.0f (battlefield=%d)\n", s_touch.downX, s_touch.downY, (int)s_touch.battlefield);
 				break;
 			case TouchState::TARGETING:
 				// Aiming ends where the finger lifts: put the cursor there, then click.
@@ -906,6 +920,11 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
 				queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
 				s_touch.phase = TouchState::LONGPRESSED;
+				GXTOUCH_LOG("rally/waypoint hold fired at %.0f,%.0f after %u ms\n", s_touch.downX, s_touch.downY, (unsigned)held);
+			}
+			else if (held >= RALLY_HOLD_MS && !s_logObjectUnderOnce) {
+				s_logObjectUnderOnce = true;
+				GXTOUCH_LOG("rally hold NOT fired: an object is under the finger\n");
 			}
 		}
 		else if (held >= LONG_PRESS_MS && s_touch.battlefield) {
@@ -916,6 +935,7 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP,
 			                   s_touch.downX, s_touch.downY, SDL_BUTTON_RIGHT);
 			s_touch.phase = TouchState::LONGPRESSED;
+			GXTOUCH_LOG("right-click hold fired (%u ms)\n", (unsigned)held);
 		}
 	}
 }
