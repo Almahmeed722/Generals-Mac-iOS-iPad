@@ -92,6 +92,20 @@
 #endif
 
 // This is here to easily toggle between the retail compatible with fixed pathfinding fallback and pure fixed pathfinding mode
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+// iOS: use the corrected (non-retail) pathfinding from the start. The retail path fails on long routes around terrain (units stop at a corner)
+// and only falls back to the corrected code after a failure it detects; iOS games are never played against retail clients.
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+#ifndef RETAIL_COMPATIBLE_PATHFINDING
+#define RETAIL_COMPATIBLE_PATHFINDING (0)
+#endif
+#ifndef RETAIL_COMPATIBLE_PATHFINDING_ALLOCATION
+#define RETAIL_COMPATIBLE_PATHFINDING_ALLOCATION (0)
+#endif
+#endif
+
 #ifndef RETAIL_COMPATIBLE_PATHFINDING
 #define RETAIL_COMPATIBLE_PATHFINDING (1)
 #endif
