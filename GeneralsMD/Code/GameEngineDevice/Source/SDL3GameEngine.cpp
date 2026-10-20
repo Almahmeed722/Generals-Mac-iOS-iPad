@@ -172,6 +172,7 @@ struct TouchState {
 		MINIMAP,     // finger on the minimap: the camera follows it
 		TARGETING,   // aiming a special power / placing a building: cursor follows the finger
 		UIDRAG,      // finger on a menu / control-bar window: a drag stays a normal mouse drag (sliders, lists)
+		UITAP,       // finger on a menu / control-bar button: pressed at once like a mouse, released when the finger lifts
 		PLACE_DRAG,  // placing a building: the position is fixed (button held), dragging turns the building, release builds
 		LONGPRESSED  // a long press already fired, swallow the rest of the touch
 	};
@@ -188,6 +189,8 @@ struct TouchState {
 	// hold-select
 	float selDownX = 0.0f, selDownY = 0.0f, selLastX = 0.0f, selLastY = 0.0f;
 	bool selActive = false;
+	bool uiDownSent = false;            // UITAP: the left button is already down
+	int uiDownDelay = 0;                // UITAP: frames to wait (so the game sees the cursor on the button first)
 	Uint64 lastMoveTicks = 0;           // last time the finger moved noticeably while aiming (to detect it resting)
 	float lastMoveX = 0.0f, lastMoveY = 0.0f;
 	// two-finger tap detection
@@ -563,6 +566,13 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				TheTacticalView->userLookAt(&radarWorld);
 				s_touch.phase = TouchState::MINIMAP;
 			}
+			// A finger on a menu, dialog or the control bar: press at once, the way a mouse does, instead of waiting
+			// for the finger to lift. (On the battlefield a touch must stay undecided: it may become a swipe.)
+			if (s_touch.phase == TouchState::PENDING && !s_touch.battlefield && !gxInTargetingMode()) {
+				s_touch.phase = TouchState::UITAP;
+				s_touch.uiDownSent = false;
+				s_touch.uiDownDelay = 1;
+			}
 		}
 		else if (s_touch.phase == TouchState::PENDING && s_touch.battlefield) {
 			s_touch.finger2 = event.tfinger.fingerID;
@@ -662,7 +672,7 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			}
 		}
 		else if ((s_touch.phase == TouchState::TARGETING || s_touch.phase == TouchState::UIDRAG ||
-		          s_touch.phase == TouchState::PLACE_DRAG) &&
+		          s_touch.phase == TouchState::PLACE_DRAG || s_touch.phase == TouchState::UITAP) &&
 		         event.tfinger.fingerID == s_touch.finger1) {
 			sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
 			if (s_touch.phase == TouchState::TARGETING &&
@@ -754,7 +764,30 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				}
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
 				queueClick(SDL_BUTTON_LEFT, s_touch.downX, s_touch.downY, false);
+				// The cursor has been on this spot since the finger landed: if that was a few frames ago the game has
+				// already seen it, so press right away (this frame) instead of waiting two more frames after the lift.
+				if (SDL_GetTicks() - s_touch.downTicks >= 50) {
+					s_tap.stage = 1;
+				}
 				GXTOUCH_LOG("tap click queued at %.0f,%.0f (battlefield=%d)\n", s_touch.downX, s_touch.downY, (int)s_touch.battlefield);
+				break;
+			case TouchState::UITAP:
+				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, px, py);
+				if (event.type == SDL_EVENT_FINGER_CANCELED) {
+					if (s_touch.uiDownSent) {
+						sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, px, py, SDL_BUTTON_LEFT);
+					}
+				} else {
+					// release next frame (the button has been down for at least one frame); a very quick tap that
+					// ended before the button went down presses and releases on the next two frames
+					s_tap.x = px;
+					s_tap.y = py;
+					s_tap.button = SDL_BUTTON_LEFT;
+					s_tap.shift = false;
+					s_tap.wasPlacing = false;
+					s_tap.holdFrames = 0;
+					s_tap.stage = s_touch.uiDownSent ? 0 : 1;
+				}
 				break;
 			case TouchState::PLACE_DRAG:
 				// The building is placed (facing the dragged direction) when the left button is released.
@@ -934,6 +967,16 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 			s_cam.prevCx = cx; s_cam.prevCy = cy; s_cam.prevDist = dist; s_cam.prevAng = ang;
 			break;
 		}
+		case TouchState::UITAP:
+			if (!s_touch.uiDownSent) {
+				if (s_touch.uiDownDelay > 0) {
+					--s_touch.uiDownDelay;
+				} else {
+					sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_touch.lastX, s_touch.lastY, SDL_BUTTON_LEFT);
+					s_touch.uiDownSent = true;
+				}
+			}
+			break;
 		case TouchState::MINIMAP: {
 			// The camera sits where the finger is on the minimap.
 			Coord3D radarWorld;
