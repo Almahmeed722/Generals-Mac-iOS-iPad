@@ -68,6 +68,8 @@
 #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
 #include "iOSHotkeys.h"
 #include <cmath>
+#include <mach/mach.h>
+#include <os/proc.h>
 #endif
 
 // Extern globals for input devices (set by GameClient)
@@ -1334,6 +1336,23 @@ void SDL3GameEngine::update(void)
 {
 	pollSDL3Events();
 #if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+	// Memory use every 10 s: iOS ends an app without a crash report when it uses too much memory, so the
+	// last [GX-MEM] line before a sudden exit shows whether that was the cause.
+	{
+		static Uint64 s_lastMemLog = 0;
+		const Uint64 memNow = SDL_GetTicks();
+		if (memNow - s_lastMemLog >= 10000) {
+			s_lastMemLog = memNow;
+			task_vm_info_data_t vmInfo;
+			mach_msg_type_number_t vmCount = TASK_VM_INFO_COUNT;
+			if (task_info(mach_task_self(), TASK_VM_INFO, (task_info_t)&vmInfo, &vmCount) == KERN_SUCCESS) {
+				fprintf(stderr, "[GX-MEM] footprint=%llu MB available=%llu MB game frame %d\n",
+				        (unsigned long long)(vmInfo.phys_footprint / (1024 * 1024)),
+				        (unsigned long long)(os_proc_available_memory() / (1024 * 1024)),
+				        TheGameLogic ? (int)TheGameLogic->getFrame() : -1);
+			}
+		}
+	}
 	// Pause sim + render while backgrounded OR inactive (see iosLifecycleWatcher).
 	// Acquiring a Metal drawable in these windows fights iOS for the layer and,
 	// across repeated suspend/switcher cycles, crashes MoltenVK. Keep polling so
