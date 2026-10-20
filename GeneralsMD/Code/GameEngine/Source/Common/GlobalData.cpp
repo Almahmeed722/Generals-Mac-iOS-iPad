@@ -36,6 +36,11 @@
 #include "texturefilter.h"
 
 #include "Common/GlobalData.h"
+#ifdef __APPLE__
+#include <TargetConditionals.h>
+#include <sys/stat.h>
+#include <cstdio>
+#endif
 
 #define DEFINE_TERRAIN_LOD_NAMES
 #define DEFINE_TIME_OF_DAY_NAMES
@@ -1442,9 +1447,28 @@ AsciiString GlobalData::BuildUserDataPathFromRegistry()
 	{
 		const char* home = getenv("HOME");
 		if (home) {
+#if defined(__APPLE__) && defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+			// Plain C strings and mkdir: inside container apps (zContainer / LiveContainer) the std::string growth
+			// inside std::filesystem::path aborted here with "pointer being freed was not allocated".
+			char buf[1024];
+			const char *parts[] = { "Library", "Application Support", "GeneralsX", "GeneralsZH" };
+			int len = snprintf(buf, sizeof(buf), "%s", home);
+			for (int i = 0; i < 4 && len > 0 && len < (int)sizeof(buf) - 64; ++i) {
+				len += snprintf(buf + len, sizeof(buf) - len, "/%s", parts[i]);
+				mkdir(buf, 0755);
+			}
+			if (len > 0 && len < (int)sizeof(buf) - 2) {
+				buf[len++] = '/';
+				buf[len] = 0;
+				userDataDir = buf;
+			} else {
+				userDataDir = "./";
+			}
+#else
 			std::filesystem::path path = std::filesystem::path(home) / "Library" / "Application Support" / "GeneralsX" / "GeneralsZH" / "";
 			std::filesystem::create_directories(path);
 			userDataDir = path.string().c_str();
+#endif
 		} else {
 			userDataDir = "./";
 		}
