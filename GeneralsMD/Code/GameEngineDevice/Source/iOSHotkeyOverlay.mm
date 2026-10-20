@@ -2,11 +2,16 @@
 //
 // A transparent UIKit layer sits above the SDL game view. Touches that miss every button fall
 // straight through to the game. Three groups of buttons:
-//   - a quick strip just above the money / power bars (Cancel, Guard, Reset view),
-//   - a strip along the top for control groups (Save + 1..9) that can be folded away,
-//   - a side bar (open it with the arrow on the right edge) with the other orders.
+//   - a quick strip just above the minimap (Cancel, Stop, Guard, Reset view),
+//   - a small strip along the top for control groups (Ctrl + 1..9) that can be folded away,
+//   - a side bar (open it with the arrow on the right edge) with the other orders; its "More" button
+//     adds the less used ones (Scatter, Add, Force fire, Queue path, Chat, Team chat).
 // Most buttons send the same key presses a keyboard would (the engine already reads SDL keyboard
 // events); a few call small helpers in the engine (select army, select air force, cancel, reset view).
+//
+// Edit mode (the gear button under the fps text, or press and hold on one of the arrows): drag a group
+// to move it, use - / + to change its size, Done to finish, Reset to go back to the default layout.
+// Positions (as a fraction of the screen) and sizes are saved separately for iPhone and iPad.
 //
 // Button frame artwork is optional: if HotkeyUI/frame.png is bundled with the app it is used,
 // otherwise a plain cyan-outlined button is drawn.
@@ -24,15 +29,17 @@ namespace {
 enum KeyKind {
 	KIND_KEY,       // press = key down, release = key up
 	KIND_ONESHOT,   // latch: key held until the next map tap finishes (Add = Shift, Force fire = Ctrl)
-	KIND_TOGGLE,    // latch: key held until tapped again (Waypoint = Alt)
+	KIND_TOGGLE,    // latch: key held until tapped again (Queue path = Alt)
 	KIND_SETGROUP,  // next number button creates a control group instead of selecting it
 	KIND_POINT,     // toggle: the next tap on empty ground sets the selected building's gathering point
 	KIND_NUMBER,    // group number 1-9
 	KIND_ACTION     // calls an engine helper
 };
 
-enum Action { ACT_ARMY = 1, ACT_AIR = 2, ACT_RESET_VIEW = 3, ACT_CANCEL = 4 };
-enum Place { PLACE_SIDE = 0, PLACE_QUICK = 1, PLACE_GROUPS = 2 };
+enum Action { ACT_ARMY = 1, ACT_AIR = 2, ACT_RESET_VIEW = 3, ACT_CANCEL = 4, ACT_MORE = 5 };
+enum Place { PLACE_SIDE = 0, PLACE_QUICK = 1, PLACE_GROUPS = 2, PLACE_MORE = 3 };
+// Movable / resizable groups
+enum Group { GROUP_SIDE = 0, GROUP_QUICK = 1, GROUP_NUMBERS = 2, GROUP_COUNT = 3 };
 
 struct KeyDef {
 	const char *label;
@@ -43,8 +50,9 @@ struct KeyDef {
 };
 
 const KeyDef kKeys[] = {
-	// quick strip (above the money / power bars)
+	// quick strip (above the minimap)
 	{ "Cancel",     "xmark.circle.fill",                    KIND_ACTION,  ACT_CANCEL,     PLACE_QUICK },
+	{ "Stop",       "stop.fill",                            KIND_KEY,     SDL_SCANCODE_S, PLACE_QUICK },
 	{ "Guard",      "hand.raised.fill",                     KIND_KEY,     SDL_SCANCODE_G, PLACE_QUICK },
 	{ "Reset view", "arrow.triangle.2.circlepath",          KIND_ACTION,  ACT_RESET_VIEW, PLACE_QUICK },
 
@@ -60,28 +68,32 @@ const KeyDef kKeys[] = {
 	{ "8", "", KIND_NUMBER, SDL_SCANCODE_8, PLACE_GROUPS },
 	{ "9", "", KIND_NUMBER, SDL_SCANCODE_9, PLACE_GROUPS },
 
-	// side bar
+	// side bar: main buttons
 	{ "Army",       "shield.fill",                          KIND_ACTION,  ACT_ARMY,       PLACE_SIDE },
 	{ "Air force",  "airplane",                             KIND_ACTION,  ACT_AIR,        PLACE_SIDE },
 	{ "Same type",  "square.on.square",                     KIND_KEY,     SDL_SCANCODE_E, PLACE_SIDE },
+	{ "Attack move","scope",                                KIND_KEY,     SDL_SCANCODE_A, PLACE_SIDE },
+	{ "Point",      "mappin.and.ellipse",                   KIND_POINT,   0,              PLACE_SIDE },
 	{ "Base",       "house.fill",                           KIND_KEY,     SDL_SCANCODE_H, PLACE_SIDE },
 	{ "Alert",      "exclamationmark.triangle.fill",        KIND_KEY,     SDL_SCANCODE_SPACE, PLACE_SIDE },
-	{ "Stop",       "stop.fill",                            KIND_KEY,     SDL_SCANCODE_S, PLACE_SIDE },
-	{ "Scatter",    "arrow.up.left.and.arrow.down.right",   KIND_KEY,     SDL_SCANCODE_X, PLACE_SIDE },
-	{ "Attack move","scope",                                KIND_KEY,     SDL_SCANCODE_A, PLACE_SIDE },
-	{ "Add",        "plus.circle.fill",                     KIND_ONESHOT, SDL_SCANCODE_LSHIFT, PLACE_SIDE },
-	{ "Force fire", "flame.fill",                           KIND_ONESHOT, SDL_SCANCODE_LCTRL,  PLACE_SIDE },
-	{ "Queue path", "point.topleft.down.curvedto.point.bottomright.up", KIND_TOGGLE,  SDL_SCANCODE_LALT,   PLACE_SIDE },
-	{ "Point",      "mappin.and.ellipse",                   KIND_POINT,   0,                   PLACE_SIDE },
-	{ "Chat",       "bubble.left.fill",                     KIND_KEY,     SDL_SCANCODE_RETURN, PLACE_SIDE },
-	{ "Team chat",  "bubble.left.and.bubble.right.fill",    KIND_KEY,     SDL_SCANCODE_BACKSPACE, PLACE_SIDE },
+	{ "More",       "ellipsis.circle.fill",                 KIND_ACTION,  ACT_MORE,       PLACE_SIDE },
+
+	// side bar: shown after "More" is pressed
+	{ "Scatter",    "arrow.up.left.and.arrow.down.right",   KIND_KEY,     SDL_SCANCODE_X, PLACE_MORE },
+	{ "Add",        "plus.circle.fill",                     KIND_ONESHOT, SDL_SCANCODE_LSHIFT, PLACE_MORE },
+	{ "Force fire", "flame.fill",                           KIND_ONESHOT, SDL_SCANCODE_LCTRL,  PLACE_MORE },
+	{ "Queue path", "point.topleft.down.curvedto.point.bottomright.up", KIND_TOGGLE,  SDL_SCANCODE_LALT,   PLACE_MORE },
+	{ "Chat",       "bubble.left.fill",                     KIND_KEY,     SDL_SCANCODE_RETURN, PLACE_MORE },
+	{ "Team chat",  "bubble.left.and.bubble.right.fill",    KIND_KEY,     SDL_SCANCODE_BACKSPACE, PLACE_MORE },
 };
 const int kKeyCount = (int)(sizeof(kKeys) / sizeof(kKeys[0]));
 
 UIColor *cyan() { return [UIColor colorWithRed:0.55 green:0.92 blue:1.0 alpha:1.0]; }
+UIColor *amber() { return [UIColor colorWithRed:1.0 green:0.78 blue:0.2 alpha:1.0]; }
 UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:0.84]; }
 
 } // namespace
+
 
 // ---------------------------------------------------------------------------
 
@@ -251,8 +263,6 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 }
 @end
 
-// ---------------------------------------------------------------------------
-
 @interface GXHotkeyController : NSObject
 + (instancetype)shared;
 - (void)installInWindow:(UIWindow *)window;
@@ -267,15 +277,25 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	UIView *_bar;          // side bar
 	UIScrollView *_scroll;
 	UIButton *_tab;        // side bar arrow
-	UIView *_quick;        // quick strip above the money / power bars
+	UIView *_quick;        // quick strip above the minimap
 	UIView *_groups;       // control group strip at the top
 	UIButton *_groupTab;   // arrow that folds the group strip
 	NSMutableArray<GXKeyButton *> *_buttons;
 	BOOL _open;
+	BOOL _moreOpen;
 	BOOL _groupsOpen;
 	BOOL _setGroupNext;
 	BOOL _installed;
 	CGFloat _anchorLeft, _anchorTop, _anchorWidth;
+
+	// edit mode
+	BOOL _edit;
+	UIButton *_gear;
+	UIButton *_resetBtn;
+	UILabel *_hint;
+	UIView *_pill[GROUP_COUNT];   // "- / +" for each group, shown only while editing
+	CGFloat _cx[GROUP_COUNT], _cy[GROUP_COUNT]; // saved centre as a fraction of the screen (negative = default)
+	CGFloat _scale[GROUP_COUNT];
 }
 
 + (instancetype)shared
@@ -293,7 +313,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	switch (place) {
 		case PLACE_QUICK: return _quick;
 		case PLACE_GROUPS: return _groups;
-		default: return _scroll;
+		default: return _scroll; // side + more
 	}
 }
 
@@ -318,6 +338,55 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	return v;
 }
 
+// ---- saved layout (per device type) ----
+
+- (NSString *)defaultsKey:(int)g name:(NSString *)name
+{
+	return [NSString stringWithFormat:@"gxui.%@.%d.%@", [self isPad] ? @"pad" : @"phone", g, name];
+}
+
+- (void)loadConfig
+{
+	NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+	for (int g = 0; g < GROUP_COUNT; ++g) {
+		id cx = [d objectForKey:[self defaultsKey:g name:@"cx"]];
+		id cy = [d objectForKey:[self defaultsKey:g name:@"cy"]];
+		id sc = [d objectForKey:[self defaultsKey:g name:@"scale"]];
+		_cx[g] = (cx && cy) ? [cx doubleValue] : -1.0;
+		_cy[g] = (cx && cy) ? [cy doubleValue] : -1.0;
+		_scale[g] = sc ? MIN(1.6, MAX(0.6, [sc doubleValue])) : 1.0;
+	}
+}
+
+- (void)saveConfig
+{
+	NSUserDefaults *d = [NSUserDefaults standardUserDefaults];
+	for (int g = 0; g < GROUP_COUNT; ++g) {
+		if (_cx[g] >= 0) {
+			[d setDouble:_cx[g] forKey:[self defaultsKey:g name:@"cx"]];
+			[d setDouble:_cy[g] forKey:[self defaultsKey:g name:@"cy"]];
+		} else {
+			[d removeObjectForKey:[self defaultsKey:g name:@"cx"]];
+			[d removeObjectForKey:[self defaultsKey:g name:@"cy"]];
+		}
+		[d setDouble:_scale[g] forKey:[self defaultsKey:g name:@"scale"]];
+	}
+	[d synchronize];
+}
+
+- (UIButton *)makeTextButton:(NSString *)title
+{
+	UIButton *b = [UIButton buttonWithType:UIButtonTypeCustom];
+	b.backgroundColor = panel();
+	b.layer.cornerRadius = 10.0;
+	b.layer.borderWidth = 1.0;
+	b.layer.borderColor = amber().CGColor;
+	[b setTitle:title forState:UIControlStateNormal];
+	[b setTitleColor:amber() forState:UIControlStateNormal];
+	b.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightBold];
+	return b;
+}
+
 - (void)installInWindow:(UIWindow *)window
 {
 	if (_installed || !window) return;
@@ -325,6 +394,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	_buttons = [NSMutableArray array];
 	_anchorLeft = -1;
 	_anchorTop = -1;
+	[self loadConfig];
 
 	_root = [[GXPassThroughView alloc] initWithFrame:window.bounds];
 	_root.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
@@ -334,6 +404,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 
 	_bar = [self makePanel];
 	_bar.hidden = YES;
+	_bar.tag = GROUP_SIDE;
 	[_root addSubview:_bar];
 
 	_scroll = [[UIScrollView alloc] initWithFrame:CGRectZero];
@@ -342,9 +413,11 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	[_bar addSubview:_scroll];
 
 	_quick = [self makePanel];
+	_quick.tag = GROUP_QUICK;
 	[_root addSubview:_quick];
 
 	_groups = [self makePanel];
+	_groups.tag = GROUP_NUMBERS;
 	[_root addSubview:_groups];
 	_groupsOpen = YES;
 
@@ -364,10 +437,76 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	[_groupTab addTarget:self action:@selector(toggleGroups) forControlEvents:UIControlEventTouchUpInside];
 	[_root addSubview:_groupTab];
 
+	// press and hold an arrow = edit mode
+	for (UIButton *t in @[ _tab, _groupTab ]) {
+		UILongPressGestureRecognizer *lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(arrowHeld:)];
+		lp.minimumPressDuration = 0.6;
+		[t addGestureRecognizer:lp];
+	}
+
+	// dragging a group (only active while editing)
+	for (UIView *p in @[ _bar, _quick, _groups ]) {
+		UIPanGestureRecognizer *pan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(groupPanned:)];
+		pan.enabled = NO;
+		[p addGestureRecognizer:pan];
+	}
+
+	// edit controls: gear, Reset, hint, and a "- / +" pill per group
+	_gear = [self makeTextButton:@""];
+	[_gear addTarget:self action:@selector(gearTapped) forControlEvents:UIControlEventTouchUpInside];
+	_gear.tintColor = cyan();
+	[_root addSubview:_gear];
+
+	_resetBtn = [self makeTextButton:@"Reset"];
+	[_resetBtn addTarget:self action:@selector(resetLayout) forControlEvents:UIControlEventTouchUpInside];
+	_resetBtn.hidden = YES;
+	[_root addSubview:_resetBtn];
+
+	_hint = [[UILabel alloc] initWithFrame:CGRectZero];
+	_hint.text = @"Drag a group to move it.  − / +  changes its size.";
+	_hint.textColor = amber();
+	_hint.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+	_hint.hidden = YES;
+	_hint.userInteractionEnabled = NO;
+	[_root addSubview:_hint];
+
+	for (int g = 0; g < GROUP_COUNT; ++g) {
+		UIView *pill = [self makePanel];
+		pill.layer.borderColor = amber().CGColor;
+		pill.layer.borderWidth = 1.0;
+		pill.layer.cornerRadius = 12.0;
+		pill.hidden = YES;
+		for (int k = 0; k < 2; ++k) {
+			UIButton *b = [self makeTextButton:(k == 0 ? @"−" : @"+")];
+			b.tag = g * 10 + k;
+			b.frame = CGRectMake(4 + k * 40, 4, 36, 30);
+			[b addTarget:self action:@selector(sizeTapped:) forControlEvents:UIControlEventTouchUpInside];
+			[pill addSubview:b];
+		}
+		_pill[g] = pill;
+		[_root addSubview:pill];
+	}
+
 	__weak GXHotkeyController *weakSelf = self;
 	_root.onLayout = ^{ [weakSelf layoutAll]; };
 	_open = NO;
 	[self layoutAll];
+}
+
+// ---- layout ----
+
+// Frame for a group: its saved centre (or the given default centre), kept inside the safe area.
+- (CGRect)frameForGroup:(int)g size:(CGSize)sz defaultCenter:(CGPoint)dc
+{
+	UIEdgeInsets safe = _root.safeAreaInsets;
+	const CGFloat W = _root.bounds.size.width, H = _root.bounds.size.height;
+	CGPoint c = (_cx[g] >= 0) ? CGPointMake(_cx[g] * W, _cy[g] * H) : dc;
+	CGFloat x = c.x - sz.width * 0.5, y = c.y - sz.height * 0.5;
+	const CGFloat minX = safe.left + 2.0, maxX = W - safe.right - sz.width - 2.0;
+	const CGFloat minY = safe.top + 2.0, maxY = H - safe.bottom - sz.height - 2.0;
+	x = MAX(minX, MIN(maxX < minX ? minX : maxX, x));
+	y = MAX(minY, MIN(maxY < minY ? minY : maxY, y));
+	return CGRectMake(round(x), round(y), sz.width, sz.height);
 }
 
 - (void)layoutAll
@@ -377,12 +516,16 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	UIEdgeInsets safe = _root.safeAreaInsets;
 	const CGFloat W = _root.bounds.size.width, H = _root.bounds.size.height;
 	const CGFloat gap = 6.0, inset = 8.0;
+	const BOOL barOpen = _open || _edit;
+	const BOOL groupsOpen = _groupsOpen || _edit;
 
-	// ---- side bar (right edge) ----
-	const CGFloat size = pad ? 64.0 : 52.0;
-	const int cols = 3;
+	// ---- side bar ----
+	const CGFloat size = round((pad ? 64.0 : 46.0) * _scale[GROUP_SIDE]);
+	const int cols = pad ? 3 : 2;
 	int sideCount = 0;
-	for (int i = 0; i < kKeyCount; ++i) if (kKeys[i].place == PLACE_SIDE) ++sideCount;
+	for (int i = 0; i < kKeyCount; ++i) {
+		if (kKeys[i].place == PLACE_SIDE || (kKeys[i].place == PLACE_MORE && _moreOpen)) ++sideCount;
+	}
 	const int rows = (sideCount + cols - 1) / cols;
 	const CGFloat contentW = cols * size + (cols - 1) * gap;
 	const CGFloat contentH = rows * size + (rows - 1) * gap;
@@ -390,41 +533,47 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	CGFloat barH = contentH + 2 * inset;
 	const CGFloat maxH = H - safe.top - safe.bottom - 16.0;
 	if (barH > maxH) barH = maxH;
-	const CGFloat barX = W - safe.right - barW;
-	const CGFloat barY = safe.top + (H - safe.top - safe.bottom - barH) * 0.5;
-	_bar.frame = CGRectMake(barX, barY, barW, barH);
+	CGRect barF = [self frameForGroup:GROUP_SIDE size:CGSizeMake(barW, barH)
+		defaultCenter:CGPointMake(W - safe.right - barW * 0.5, safe.top + (H - safe.top - safe.bottom) * 0.5)];
+	_bar.frame = barF;
+	_bar.hidden = !barOpen;
 	_scroll.frame = CGRectMake(0, inset, barW, barH - 2 * inset);
 	_scroll.contentSize = CGSizeMake(barW, contentH);
+	_scroll.userInteractionEnabled = !_edit;
 
-	// ---- quick strip (above the money / power bars) ----
-	const CGFloat qs = pad ? 58.0 : 48.0;
+	// ---- quick strip (above the minimap) ----
+	const CGFloat qs = round((pad ? 58.0 : 44.0) * _scale[GROUP_QUICK]);
 	int quickCount = 0;
 	for (int i = 0; i < kKeyCount; ++i) if (kKeys[i].place == PLACE_QUICK) ++quickCount;
 	const CGFloat quickW = quickCount * qs + (quickCount - 1) * gap + 2 * 6.0;
 	const CGFloat quickH = qs + 2 * 6.0;
-	CGFloat quickX = (_anchorLeft >= 0) ? (_anchorLeft + (_anchorWidth - quickW) * 0.5) : (safe.left + 12.0);
-	CGFloat quickY = (_anchorTop >= 0) ? (_anchorTop - quickH - 6.0) : (H - safe.bottom - 170.0);
-	if (quickX + quickW > W - safe.right) quickX = W - safe.right - quickW;
-	if (quickX < safe.left) quickX = safe.left;
-	if (quickY < safe.top + 4.0) quickY = safe.top + 4.0;
-	_quick.frame = CGRectMake(quickX, quickY, quickW, quickH);
+	CGPoint quickDef;
+	quickDef.x = (_anchorLeft >= 0) ? (_anchorLeft + _anchorWidth * 0.5) : (safe.left + 12.0 + quickW * 0.5);
+	quickDef.y = (_anchorTop >= 0) ? (_anchorTop - quickH * 0.5 - 6.0) : (H - safe.bottom - 170.0 + quickH * 0.5);
+	_quick.frame = [self frameForGroup:GROUP_QUICK size:CGSizeMake(quickW, quickH) defaultCenter:quickDef];
 
 	// ---- control groups (top, centred) ----
-	const CGFloat gs = pad ? 52.0 : 42.0;
+	const CGFloat gs = round((pad ? 44.0 : 34.0) * _scale[GROUP_NUMBERS]);
 	int groupCount = 0;
 	for (int i = 0; i < kKeyCount; ++i) if (kKeys[i].place == PLACE_GROUPS) ++groupCount;
 	const CGFloat groupsW = groupCount * gs + (groupCount - 1) * 4.0 + 2 * 6.0;
 	const CGFloat groupsH = gs + 2 * 5.0;
-	const CGFloat groupsX = (W - groupsW) * 0.5;
-	const CGFloat groupsY = safe.top + 2.0;
-	_groups.frame = CGRectMake(groupsX, groupsY, groupsW, groupsH);
-	_groups.hidden = !_groupsOpen;
+	CGRect groupsF = [self frameForGroup:GROUP_NUMBERS size:CGSizeMake(groupsW, groupsH)
+		defaultCenter:CGPointMake(W * 0.5, safe.top + 2.0 + groupsH * 0.5)];
+	_groups.frame = groupsF;
+	_groups.hidden = !groupsOpen;
 
+	// ---- buttons ----
 	int sideIdx = 0, quickIdx = 0, groupIdx = 0;
 	for (int i = 0; i < kKeyCount; ++i) {
 		GXKeyButton *b = _buttons[i];
+		b.userInteractionEnabled = !_edit;
 		switch (kKeys[i].place) {
-			case PLACE_SIDE: {
+			case PLACE_SIDE:
+			case PLACE_MORE: {
+				const BOOL shown = (kKeys[i].place == PLACE_SIDE) || _moreOpen;
+				b.hidden = !shown;
+				if (!shown) break;
 				const int r = sideIdx / cols, c = sideIdx % cols;
 				b.frame = CGRectMake(inset + c * (size + gap), r * (size + gap), size, size);
 				++sideIdx;
@@ -444,14 +593,50 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	// ---- arrow tabs ----
 	UIImageSymbolConfiguration *cfg = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightBold];
 	const CGFloat tabW = 26.0, tabH = 72.0;
-	const CGFloat tabX = _open ? (barX - tabW + 1.0) : (W - safe.right - tabW);
-	_tab.frame = CGRectMake(tabX, safe.top + (H - safe.top - safe.bottom - tabH) * 0.5, tabW, tabH);
+	const CGFloat tabX = barOpen ? (barF.origin.x - tabW + 1.0) : (W - safe.right - tabW);
+	_tab.frame = CGRectMake(MAX(safe.left, tabX), CGRectGetMidY(barF) - tabH * 0.5, tabW, tabH);
 	[_tab setImage:[UIImage systemImageNamed:(_open ? @"chevron.right" : @"chevron.left") withConfiguration:cfg] forState:UIControlStateNormal];
+	_tab.hidden = _edit;
 
 	const CGFloat gtW = 64.0, gtH = 22.0;
-	const CGFloat gtY = _groupsOpen ? (groupsY + groupsH - 1.0) : (safe.top + 2.0);
-	_groupTab.frame = CGRectMake((W - gtW) * 0.5, gtY, gtW, gtH);
+	const CGFloat gtY = _groupsOpen ? (CGRectGetMaxY(groupsF) - 1.0) : groupsF.origin.y;
+	_groupTab.frame = CGRectMake(CGRectGetMidX(groupsF) - gtW * 0.5, gtY, gtW, gtH);
 	[_groupTab setImage:[UIImage systemImageNamed:(_groupsOpen ? @"chevron.up" : @"chevron.down") withConfiguration:cfg] forState:UIControlStateNormal];
+	_groupTab.hidden = _edit;
+
+	// ---- edit mode controls ----
+	UIImageSymbolConfiguration *gcfg = [UIImageSymbolConfiguration configurationWithPointSize:16 weight:UIImageSymbolWeightSemibold];
+	const CGFloat gy = safe.top + 30.0;
+	[_gear setImage:[UIImage systemImageNamed:(_edit ? @"checkmark" : @"gearshape.fill") withConfiguration:gcfg] forState:UIControlStateNormal];
+	_gear.tintColor = _edit ? amber() : cyan();
+	_gear.layer.borderColor = (_edit ? amber() : cyan()).CGColor;
+	_gear.alpha = _edit ? 1.0 : 0.6;
+	_gear.frame = CGRectMake(safe.left + 8.0, gy, 36.0, 36.0);
+	_resetBtn.frame = CGRectMake(CGRectGetMaxX(_gear.frame) + 8.0, gy, 64.0, 36.0);
+	_resetBtn.hidden = !_edit;
+	_hint.frame = CGRectMake(CGRectGetMaxX(_resetBtn.frame) + 10.0, gy, 360.0, 36.0);
+	_hint.hidden = !_edit;
+
+	UIView *panels[GROUP_COUNT] = { _bar, _quick, _groups };
+	for (int g = 0; g < GROUP_COUNT; ++g) {
+		UIView *p = panels[g];
+		const BOOL shown = _edit && !p.hidden;
+		_pill[g].hidden = !shown;
+		p.layer.borderColor = (_edit ? amber() : cyan()).CGColor;
+		p.layer.borderWidth = _edit ? 2.0 : 0.5;
+		if (shown) {
+			const CGFloat pw = 84.0, ph = 38.0;
+			CGFloat px = CGRectGetMidX(p.frame) - pw * 0.5;
+			px = MAX(safe.left + 2.0, MIN(W - safe.right - pw - 2.0, px));
+			CGFloat py = p.frame.origin.y - ph - 4.0;
+			if (py < safe.top + 2.0) py = CGRectGetMaxY(p.frame) + 4.0;
+			if (py + ph > H - safe.bottom) py = p.frame.origin.y + 4.0;
+			_pill[g].frame = CGRectMake(px, py, pw, ph);
+			[_root bringSubviewToFront:_pill[g]];
+		}
+	}
+	[_root bringSubviewToFront:_gear];
+	[_root bringSubviewToFront:_resetBtn];
 }
 
 - (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top width:(CGFloat)width
@@ -466,7 +651,6 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 - (void)toggleBar
 {
 	_open = !_open;
-	_bar.hidden = !_open;
 	[self layoutAll];
 }
 
@@ -476,15 +660,78 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	[self layoutAll];
 }
 
+// ---- edit mode ----
+
+- (void)setEditMode:(BOOL)on
+{
+	if (_edit == on) return;
+	if (on) [self releaseAllLatches];
+	_edit = on;
+	for (UIView *p in @[ _bar, _quick, _groups ]) {
+		for (UIGestureRecognizer *gr in p.gestureRecognizers) {
+			if ([gr isKindOfClass:[UIPanGestureRecognizer class]]) gr.enabled = on;
+		}
+	}
+	if (!on) [self saveConfig];
+	[self layoutAll];
+}
+
+- (void)gearTapped { [self setEditMode:!_edit]; }
+
+- (void)arrowHeld:(UILongPressGestureRecognizer *)gr
+{
+	if (gr.state == UIGestureRecognizerStateBegan) [self setEditMode:YES];
+}
+
+- (void)resetLayout
+{
+	for (int g = 0; g < GROUP_COUNT; ++g) {
+		_cx[g] = -1.0;
+		_cy[g] = -1.0;
+		_scale[g] = 1.0;
+	}
+	[self saveConfig];
+	[self layoutAll];
+}
+
+- (void)sizeTapped:(UIButton *)b
+{
+	const int g = (int)(b.tag / 10);
+	const BOOL plus = (b.tag % 10) == 1;
+	_scale[g] = MIN(1.6, MAX(0.6, _scale[g] + (plus ? 0.1 : -0.1)));
+	[self layoutAll];
+	[self saveConfig];
+}
+
+- (void)groupPanned:(UIPanGestureRecognizer *)gr
+{
+	UIView *v = gr.view;
+	const int g = (int)v.tag;
+	const CGFloat W = _root.bounds.size.width, H = _root.bounds.size.height;
+	if (W < 1 || H < 1) return;
+	if (gr.state == UIGestureRecognizerStateChanged || gr.state == UIGestureRecognizerStateEnded) {
+		CGPoint t = [gr translationInView:_root];
+		[gr setTranslation:CGPointZero inView:_root];
+		_cx[g] = (v.center.x + t.x) / W;
+		_cy[g] = (v.center.y + t.y) / H;
+		[self layoutAll];
+		// keep what the screen actually shows (the frame is kept inside the safe area)
+		_cx[g] = v.center.x / W;
+		_cy[g] = v.center.y / H;
+	}
+	if (gr.state == UIGestureRecognizerStateEnded || gr.state == UIGestureRecognizerStateCancelled) [self saveConfig];
+}
+
 - (void)setVisible:(BOOL)visible
 {
 	if (!_root) return;
 	_root.hidden = !visible;
 	if (!visible) {
 		// leaving the match: drop anything held down
+		if (_edit) [self setEditMode:NO];
 		[self releaseAllLatches];
 		_open = NO;
-		_bar.hidden = YES;
+		_moreOpen = NO;
 		_groupsOpen = YES;
 		[self layoutAll];
 	}
@@ -541,7 +788,13 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 			gxHotkeySetPointMode(b.latched ? true : false);
 			break;
 		case KIND_ACTION:
-			[self runAction:d.code];
+			if (d.code == ACT_MORE) {
+				_moreOpen = !_moreOpen;
+				b.latched = _moreOpen;
+				[self layoutAll];
+			} else {
+				[self runAction:d.code];
+			}
 			break;
 	}
 }
@@ -595,6 +848,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 }
 
 @end
+
 
 // ---------------------------------------------------------------------------
 
