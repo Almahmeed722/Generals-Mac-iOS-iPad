@@ -3284,7 +3284,9 @@ void STLSpecialAlloc::deallocate(void* __p, size_t)
 static void *gxAlloc(size_t size)
 {
 	++theLinkTester;
-	void *p = malloc(size ? size : 1);
+	// calloc: the game's constructors read members they never set, which only worked because the pool
+	// allocator's fresh memory happened to be zero; reused malloc memory holds old data and crashed at startup.
+	void *p = calloc(1, size ? size : 1);
 	if (!p) throw std::bad_alloc();
 	return p;
 }
