@@ -201,7 +201,7 @@ const Uint64 LONG_PRESS_MS = 600;
 const Uint64 RALLY_HOLD_MS = 2000;     // hold this long to give a building a rally / waypoint
 const Uint64 HOLD_SELECT_MS = 220;     // finger1 must have been still this long before finger2 means "select"
 const Uint64 DOUBLE_TAP_MS = 350;
-const Uint64 PLACE_ANCHOR_MS = 400;    // placing a building: a finger resting this long fixes the position; dragging then turns it
+const Uint64 PLACE_ANCHOR_MS = 40;     // placing a building: the position is fixed ~2 frames after the finger lands (so the game has seen the cursor there); dragging then turns it at once
 const float DOUBLE_TAP_DIST_PX = 48.0f;
 const float PINCH_STEP_RATIO = 0.05f;  // 5% distance change per wheel tick
 const float TAP_DEAD_ZONE_PX = 14.0f;  // jitter below this keeps a tap a tap (a thumb moves ~10pt while tapping)
@@ -236,6 +236,7 @@ struct PendingTap {
 	Uint8 button = SDL_BUTTON_LEFT;
 	bool shift = false;                  // hold Shift for this click (add to the selection)
 	bool wasPlacing = false;             // the click happened while a building was being placed
+	int holdFrames = 0;                  // extra frames to keep the button down (menus)
 };
 PendingTap s_tap;
 bool s_logObjectUnderOnce = false;
@@ -256,6 +257,7 @@ void sendSyntheticMouse(SDL3Mouse *mouse, SDL_Window *window, Uint32 type,
 	SDL_Event ev;
 	SDL_zero(ev);
 	ev.type = type;
+	ev.common.timestamp = SDL_GetTicksNS();
 	switch (type) {
 		case SDL_EVENT_MOUSE_MOTION:
 			ev.motion.windowID = windowID;
@@ -360,6 +362,11 @@ bool gxInTargetingMode()
 	if (!TheInGameUI) {
 		return false;
 	}
+	// Only inside a running match: a stale "pending command" must never make a menu behave like aiming
+	// (that scrolled the menu's background scene when a finger rested near the screen edge).
+	if (!TheGameLogic || !TheGameLogic->isInGame() || !GameLogic::isInInteractiveGame(TheGameLogic->getGameMode())) {
+		return false;
+	}
 	return TheInGameUI->getGUICommand() != nullptr || TheInGameUI->getPendingPlaceType() != nullptr;
 }
 
@@ -367,7 +374,8 @@ bool gxInTargetingMode()
 // position and dragging turns the building, exactly like press-and-drag with a mouse.
 bool gxPlacingBuilding()
 {
-	return TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr;
+	return TheInGameUI != nullptr && TheInGameUI->getPendingPlaceType() != nullptr &&
+	       TheGameLogic != nullptr && TheGameLogic->isInGame() && GameLogic::isInInteractiveGame(TheGameLogic->getGameMode());
 }
 
 // Convert window points to the game's internal screen pixels.
@@ -616,7 +624,11 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 
 		if (s_touch.phase == TouchState::PENDING && event.tfinger.fingerID == s_touch.finger1) {
 			const float moved = SDL_fabsf(px - s_touch.downX) + SDL_fabsf(py - s_touch.downY);
-			if (gxInTargetingMode()) {
+			if (gxPlacingBuilding()) {
+				// Placing a building: it is fixed where the finger landed (frame hook, ~40 ms) and from then on
+				// every movement turns it. Nothing to do here; no swipe, no aiming.
+			}
+			else if (gxInTargetingMode()) {
 				// A special power / building placement is waiting for a target: the cursor (and the white
 				// targeting circle or ghost building) follows the finger from the first movement; the
 				// click happens when the finger lifts.
@@ -800,7 +812,10 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 {
 	// --- 1. staged click: button down one frame after the cursor arrived, button up one frame later
-	if (s_tap.stage == 0) {
+	if (s_tap.stage == 0 && s_tap.holdFrames > 0) {
+		--s_tap.holdFrames; // menu click: button stays down one more frame
+	}
+	else if (s_tap.stage == 0) {
 		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_UP, s_tap.x, s_tap.y, s_tap.button);
 		s_tap.stage = -1;
 		gxHotkeyNotifyTapDone();
@@ -835,6 +850,7 @@ void updateTouchLongPress(SDL3Mouse *mouse, SDL_Window *window)
 		}
 		sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_BUTTON_DOWN, s_tap.x, s_tap.y, s_tap.button, 0.0f, clicks);
 		s_tap.stage = 0;
+		s_tap.holdFrames = gxTouchOnBattlefield(s_tap.x, s_tap.y, tapWinW, tapWinH) ? 0 : 1;
 	}
 	else if (s_tap.stage == 2) {
 		s_tap.stage = 1;
@@ -1022,6 +1038,7 @@ void gxHotkeySendKey(int scancode, bool down)
 	SDL_Event ev;
 	SDL_zero(ev);
 	ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+	ev.common.timestamp = SDL_GetTicksNS();
 	ev.key.scancode = (SDL_Scancode)scancode;
 	ev.key.down = down;
 	ev.key.repeat = false;
