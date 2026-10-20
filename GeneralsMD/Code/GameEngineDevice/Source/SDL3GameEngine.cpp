@@ -683,10 +683,14 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 				if (event.type == SDL_EVENT_FINGER_CANCELED) {
 					break;
 				}
-				// With only buildings selected, a quick tap on empty ground would silently move the
-				// building's rally point: ignore it (a 2 second hold does that on purpose).
+				// With only buildings selected, a quick tap on empty ground clears the selection (the same as
+				// the Cancel button) instead of silently moving the building's rally point. A 2 second hold
+				// sets the rally point / waypoint on purpose.
 				if (s_touch.battlefield && gxOnlyBuildingsSelected() && !gxObjectUnder(s_touch.downX, s_touch.downY, winW, winH)) {
-					GXTOUCH_LOG("tap ignored: only buildings selected and empty ground (hold 2 s for a rally point)\n");
+					if (TheInGameUI) {
+						TheInGameUI->deselectAllDrawables();
+					}
+					GXTOUCH_LOG("tap on empty ground with only buildings selected: deselected\n");
 					break;
 				}
 				sendSyntheticMouse(mouse, window, SDL_EVENT_MOUSE_MOTION, s_touch.downX, s_touch.downY);
