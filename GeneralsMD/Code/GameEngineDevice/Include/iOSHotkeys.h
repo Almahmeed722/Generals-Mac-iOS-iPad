@@ -20,6 +20,8 @@ void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width);
 void gxHotkeyNotifyTapDone();
 // The engine used the "Point" mode for one tap: switch the button's light off.
 void gxHotkeyPointModeConsumed();
+// A finger touched the control bar / a menu: let go of a latched "Queue path" (Alt) so it is not left held down.
+void gxHotkeyReleaseQueuePath();
 // Extra running time from iOS while the app is in the background (keeps a multiplayer game connected for a short while).
 void gxBackgroundTaskBegin();
 void gxBackgroundTaskEnd();

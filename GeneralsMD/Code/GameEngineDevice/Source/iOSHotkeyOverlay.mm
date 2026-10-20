@@ -270,6 +270,7 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 - (void)setQuickAnchorLeft:(CGFloat)left top:(CGFloat)top width:(CGFloat)width;
 - (void)pointModeConsumed;
 - (void)tapDone;
+- (void)releaseToggles;
 @end
 
 @implementation GXHotkeyController {
@@ -759,9 +760,23 @@ UIColor *panel() { return [UIColor colorWithRed:0.03 green:0.07 blue:0.13 alpha:
 	}
 }
 
+// "Queue path" (Alt) must not stay held after the orders are given: let go of every latched toggle.
+- (void)releaseToggles
+{
+	for (GXKeyButton *b in _buttons) {
+		if (!b.latched || kKeys[b.defIndex].kind != KIND_TOGGLE) continue;
+		gxHotkeySendKey(kKeys[b.defIndex].code, false);
+		b.latched = NO;
+	}
+}
+
 - (void)keyDown:(GXKeyButton *)b
 {
 	const KeyDef &d = kKeys[b.defIndex];
+	// any other order button ends a queued path (Alt)
+	if (d.kind == KIND_KEY || d.kind == KIND_NUMBER || d.kind == KIND_POINT || (d.kind == KIND_ACTION && d.code != ACT_MORE)) {
+		[self releaseToggles];
+	}
 	switch (d.kind) {
 		case KIND_KEY:
 			gxHotkeySendKey(d.code, true);
@@ -878,6 +893,11 @@ void gxHotkeyOverlaySetQuickAnchor(float left, float top, float width)
 void gxHotkeyNotifyTapDone()
 {
 	[[GXHotkeyController shared] tapDone];
+}
+
+void gxHotkeyReleaseQueuePath()
+{
+	[[GXHotkeyController shared] releaseToggles];
 }
 
 void gxHotkeyPointModeConsumed()

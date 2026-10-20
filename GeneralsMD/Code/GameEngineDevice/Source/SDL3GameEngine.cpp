@@ -437,6 +437,16 @@ bool gxOnlyBuildingsSelected()
 			return false;
 		}
 	}
+	// A firing Particle Cannon (or Spectre Gunship) is steered by clicking while the building stays selected:
+	// a tap then is a steering click, not "clear the selection".
+	// (probed at the first selected building's own position, which is never in shroud)
+	const Object *first = (*list->begin())->getObject();
+	if (first) {
+		const Coord3D probe = *first->getPosition();
+		if (TheInGameUI->canSelectedObjectsOverrideSpecialPowerDestination(&probe, InGameUI::SELECTION_ANY, SPECIAL_INVALID)) {
+			return false;
+		}
+	}
 	return true;
 }
 
@@ -570,6 +580,7 @@ void handleTouchEvent(SDL3Mouse *mouse, SDL_Window *window, const SDL_Event &eve
 			// for the finger to lift. (On the battlefield a touch must stay undecided: it may become a swipe.)
 			if (s_touch.phase == TouchState::PENDING && !s_touch.battlefield && !gxInTargetingMode()) {
 				s_touch.phase = TouchState::UITAP;
+				gxHotkeyReleaseQueuePath(); // do not leave Alt held while using the control bar / menus
 				s_touch.uiDownSent = false;
 				s_touch.uiDownDelay = 1;
 			}
