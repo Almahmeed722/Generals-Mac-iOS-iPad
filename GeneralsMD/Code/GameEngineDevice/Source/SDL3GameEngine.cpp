@@ -1258,6 +1258,25 @@ void SDL3GameEngine::update(void)
 	// Acquiring a Metal drawable in these windows fights iOS for the layer and,
 	// across repeated suspend/switcher cycles, crashes MoltenVK. Keep polling so
 	// we still catch the resume events; just don't touch the GPU.
+	{
+		// Log when the game stops and resumes, with the time and game frame, so heat / background questions can
+		// be answered from generals-stderr.log.
+		static bool s_wasPaused = false;
+		static Uint64 s_pausedAtTicks = 0;
+		const bool pausedNow = iosShouldPauseRendering();
+		if (pausedNow != s_wasPaused) {
+			const Uint64 nowTicks = SDL_GetTicks();
+			if (pausedNow) {
+				s_pausedAtTicks = nowTicks;
+				fprintf(stderr, "[GX-LIFE] paused (inactive/background) at %llu s, game frame %d\n", (unsigned long long)(nowTicks / 1000),
+				        TheGameLogic ? (int)TheGameLogic->getFrame() : -1);
+			} else {
+				fprintf(stderr, "[GX-LIFE] resumed after %llu s, game frame %d\n", (unsigned long long)((nowTicks - s_pausedAtTicks) / 1000),
+				        TheGameLogic ? (int)TheGameLogic->getFrame() : -1);
+			}
+			s_wasPaused = pausedNow;
+		}
+	}
 	if (iosShouldPauseRendering()) {
 		// iOS has the screen (incoming call, banner, notification shade, app switcher): the picture and the
 		// simulation wait, but keep the multiplayer connection serviced (the game's own "lite update", the
