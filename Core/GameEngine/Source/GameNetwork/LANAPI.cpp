@@ -225,7 +225,9 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 		}
 		else if (m_localIP != 0 && (m_localIP & 0xFFC00000u) != 0x64400000u)
 		{
+			extern bool g_gxSweepSend; // Transport.cpp
 			const UnsignedInt subnet = m_localIP & 0xFFFFFF00u;
+			g_gxSweepSend = true;
 			for (UnsignedInt host = 1; host < 255; ++host)
 			{
 				const UnsignedInt dst = subnet | host;
@@ -237,6 +239,7 @@ void LANAPI::sendMessage(LANMessage *msg, UnsignedInt ip /* = 0 */)
 					m_transport->queueSend(dst, lobbyPort, (unsigned char *)msg, sizeof(LANMessage));
 				}
 			}
+			g_gxSweepSend = false;
 		}
 #endif
 		m_transport->queueSend(m_broadcastAddr, lobbyPort, (unsigned char *)msg, sizeof(LANMessage) /*, 0, 0 */);

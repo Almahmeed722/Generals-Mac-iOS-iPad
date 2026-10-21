@@ -189,6 +189,11 @@ Bool Transport::update()
 	return retval;
 }
 
+// How many times in a row a queued packet failed to send (see the retry comment in doSend).
+static unsigned char s_failCount[MAX_MESSAGES] = {};
+static bool s_noRetry[MAX_MESSAGES] = {};   // discovery sweep / broadcast packets: dead addresses are expected, do not retry
+bool g_gxSweepSend = false;                  // set by LANAPI while it queues the /24 discovery sweep
+
 Bool Transport::doSend() {
 	if (!m_udpsock)
 	{
@@ -231,6 +236,7 @@ Bool Transport::doSend() {
 				m_outgoingPackets[m_statisticsSlot]++;
 				m_outgoingBytes[m_statisticsSlot] += m_outBuffer[i].length + sizeof(TransportMessageHeader);
 				m_outBuffer[i].length = 0;  // Remove from queue
+				s_failCount[i] = 0;
 				if (bytesSent != bytesToSend)
 				{
 					DEBUG_LOG(("Transport::doSend - wanted to send %d bytes, only sent %d bytes to %d.%d.%d.%d:%d",
@@ -245,12 +251,23 @@ Bool Transport::doSend() {
 				// iOS fails sends to dead/unresolvable hosts (the LAN lobby sweep targets a whole /24). Keeping those
 				// packets queued filled the 256-slot send queue and starved real traffic (join/start timeouts).
 				{
+					// The first packet to a device that was just discovered often fails while the network is still working out
+					// its address (EHOSTUNREACH / no route). Dropping it made the first connection time out and left the joiner
+					// without the slot list (so it could not press Accept or choose a team). Try again for a short while on the next
+					// frames; dead hosts (the lobby sweep) give up quickly.
+					const int err = errno;
+					const Bool transient = (err == EHOSTUNREACH || err == ENETUNREACH || err == EAGAIN || err == ENOBUFS || err == EADDRNOTAVAIL || err == ENETDOWN);
+					const unsigned maxTries = (transient && !s_noRetry[i]) ? 12 : 2;
+					++s_failCount[i];
 					static int s_failLog = 0;
-					if (s_failLog++ < 30)
-						fprintf(stderr, "[GX-LAN] send failed errno=%d to %u.%u.%u.%u:%d (dropped)\n", errno,
+					if (s_failLog++ < 60)
+						fprintf(stderr, "[GX-LAN] send failed errno=%d try %u/%u to %u.%u.%u.%u:%d\n", err, (unsigned)s_failCount[i], maxTries,
 							(unsigned)((m_outBuffer[i].addr >> 24) & 0xFF), (unsigned)((m_outBuffer[i].addr >> 16) & 0xFF),
 							(unsigned)((m_outBuffer[i].addr >> 8) & 0xFF), (unsigned)(m_outBuffer[i].addr & 0xFF), (int)m_outBuffer[i].port);
-					m_outBuffer[i].length = 0;
+					if (s_failCount[i] >= maxTries) {
+						s_failCount[i] = 0;
+						m_outBuffer[i].length = 0;
+					}
 				}
 #endif
 				retval = FALSE;
@@ -413,6 +430,7 @@ Bool Transport::queueSend(UnsignedInt addr, UnsignedShort port, const UnsignedBy
 			memcpy(m_outBuffer[i].data, buf, len);
 			m_outBuffer[i].addr = addr;
 			m_outBuffer[i].port = port;
+			s_noRetry[i] = g_gxSweepSend || addr == 0xFFFFFFFFu || (addr & 0xFFu) == 0xFFu;
 //			m_outBuffer[i].header.flags = flags;
 //			m_outBuffer[i].header.id = id;
 			m_outBuffer[i].header.magic = GENERALS_MAGIC_NUMBER;
