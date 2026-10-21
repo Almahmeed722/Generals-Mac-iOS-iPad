@@ -116,7 +116,13 @@ constexpr const UnsignedInt MAX_CELL_COUNT = 500;
 constexpr const UnsignedInt MAX_ADJUSTMENT_CELL_COUNT = 400;
 constexpr const UnsignedInt MAX_SAFE_PATH_CELL_COUNT = 2000;
 
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+// iOS: the original budget of 5000 cells per frame makes a big army wait many seconds, standing still, for its paths
+// (one unit after another). A tablet CPU can search far more per frame.
+constexpr const UnsignedInt PATHFIND_CELLS_PER_FRAME = 24000;
+#else
 constexpr const UnsignedInt PATHFIND_CELLS_PER_FRAME = 5000; // Number of cells we will search pathfinding per frame.
+#endif
 constexpr const UnsignedInt CELL_INFOS_TO_ALLOCATE = 30000;
 
 //-----------------------------------------------------------------------------------

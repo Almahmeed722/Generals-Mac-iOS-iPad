@@ -41,6 +41,15 @@
 #include "GameClient/ControlBarScheme.h"
 #include "GameClient/MapUtil.h"
 #include "GameLogic/GameLogic.h"
+#if defined(__APPLE__)
+#include <TargetConditionals.h>
+#endif
+// The small white marker on the power bar (your power use) is hard to see on a tablet / phone screen: draw it bigger.
+#if defined(TARGET_OS_IPHONE) && TARGET_OS_IPHONE
+static const Real GX_POWER_SLIDER_SCALE = 2.4f;
+#else
+static const Real GX_POWER_SLIDER_SCALE = 1.0f;
+#endif
 
 //-------------------------------------------------------------------------------------------------
 void W3DCameoMovieDraw( GameWindow *window, WinInstanceData *instData )
@@ -251,20 +260,20 @@ void W3DPowerDraw( GameWindow *window, WinInstanceData *instData )
 		return;
 	if(range >= size.x)
 	{
-		posXstart = pos.x + size.x - slider->getImageWidth();
+		posXstart = pos.x + size.x - (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE);
 		posXend = pos.x + size.x;
 	}
 	else
 	{
-		posXstart = pos.x + range - slider->getImageWidth()/2;
-		posXend = pos.x + range + slider->getImageWidth()/2;
+		posXstart = pos.x + range - (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE)/2;
+		posXend = pos.x + range + (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE)/2;
 	}
 	if(posXstart <=pos.x)
 	{
 		posXstart	 = pos.x;
-		posXend	= pos.x + slider->getImageWidth();
+		posXend	= pos.x + (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE);
 	}
-	TheWindowManager->winDrawImage(slider, posXstart, pos.y + size.y - slider->getImageHeight(), posXend, pos.y + size.y);
+	TheWindowManager->winDrawImage(slider, posXstart, pos.y + size.y - (Int)(slider->getImageHeight() * GX_POWER_SLIDER_SCALE), posXend, pos.y + size.y);
 }
 
 void W3DPowerDrawA( GameWindow *window, WinInstanceData *instData )
@@ -424,20 +433,20 @@ void W3DPowerDrawA( GameWindow *window, WinInstanceData *instData )
 	range = logN(consumptionForNeedle, TheGlobalData->m_powerBarBase) * (size.x / TheGlobalData->m_powerBarIntervals);
 	if(range >= size.x)
 	{
-		posXstart = pos.x + size.x - slider->getImageWidth();
+		posXstart = pos.x + size.x - (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE);
 		posXend = pos.x + size.x;
 	}
 	else
 	{
-		posXstart = pos.x + range - slider->getImageWidth()/2;
-		posXend = pos.x + range + slider->getImageWidth()/2;
+		posXstart = pos.x + range - (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE)/2;
+		posXend = pos.x + range + (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE)/2;
 	}
 	if(posXstart <=pos.x)
 	{
 		posXstart	 = pos.x;
-		posXend	= pos.x + slider->getImageWidth();
+		posXend	= pos.x + (Int)(slider->getImageWidth() * GX_POWER_SLIDER_SCALE);
 	}
-	TheWindowManager->winDrawImage(slider, posXstart, pos.y + size.y - slider->getImageHeight(), posXend, pos.y + size.y);
+	TheWindowManager->winDrawImage(slider, posXstart, pos.y + size.y - (Int)(slider->getImageHeight() * GX_POWER_SLIDER_SCALE), posXend, pos.y + size.y);
 }
 
 void W3DCommandBarGridDraw( GameWindow *window, WinInstanceData *instData )

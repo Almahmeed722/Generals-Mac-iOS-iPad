@@ -451,6 +451,7 @@ public:  // ********************************************************************
 	virtual void deselectAllDrawables( Bool postMsg = true );							///< Clear the "select" flag from all drawables
 	virtual Int getSelectCount() { return m_selectCount; }		///< Get count of currently selected drawables
 	virtual Int getMaxSelectCount() { return m_maxSelectCount; }	///< Get the max number of selected drawables
+	void setMaxSelectCount( Int count ) { m_maxSelectCount = count; }	///< Set the max number of selected drawables (<= 0: no limit)
 	virtual UnsignedInt getFrameSelectionChanged() { return m_frameSelectionChanged; }	///< Get the max number of selected drawables
 	virtual const DrawableList *getAllSelectedDrawables() const;	///< Return the list of all the currently selected Drawable IDs.
 	virtual const DrawableList *getAllSelectedLocalDrawables();		///< Return the list of all the currently selected Drawable IDs owned by the current player.

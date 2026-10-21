@@ -155,12 +155,14 @@ void OpenALAudioStream::update()
     alGetSourcei(m_source, AL_BUFFERS_QUEUED, &num_queued);
     DEBUG_LOG(("Having %i buffers queued\n", num_queued));
 
-    if (num_queued < AL_STREAM_BUFFER_COUNT / 2 && m_requireDataCallback && !m_endOfData) {
+    // Keep three quarters of the buffers filled (was half): the refill runs on the main thread once per frame, so a
+    // frame hitch (menu video, network scan) used to let the music run dry and cut out for a moment.
+    if (num_queued < (AL_STREAM_BUFFER_COUNT * 3 / 4) && m_requireDataCallback && !m_endOfData) {
         // GeneralsX @bugfix BenderAI 22/04/2026 Do not fake queue growth when callback fails to enqueue data.
         // Ask for more data to be buffered.
         // Only fill up to the half, because some formats can output
         // more than one buffer per decoded frame.
-        while (num_queued < AL_STREAM_BUFFER_COUNT / 2) {
+        while (num_queued < (AL_STREAM_BUFFER_COUNT * 3 / 4)) {
             // GeneralsX @bugfix 14/06/2026 callback returns FALSE at true end-of-file (no more
             // data will ever come). Latch m_endOfData so we stop restarting the drained source
             // and let it finish. A transient decode error still returns TRUE, so a stutter/underrun

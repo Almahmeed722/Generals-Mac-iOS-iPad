@@ -1445,18 +1445,26 @@ void SDL3GameEngine::update(void)
 		}
 	}
 
+	// No cap on how many units can be selected at once (the original limit stops "Army" at about 120 units).
+	if (TheInGameUI && TheInGameUI->getMaxSelectCount() > 0) {
+		TheInGameUI->setMaxSelectCount(-1);
+	}
 	// Allow zooming out further than the PC default (a phone screen is small). Done once; the game's
 	// own camera limit is recalculated from this value.
 	{
 		static bool s_zoomPatched = false;
 		if (!s_zoomPatched && TheWritableGlobalData && TheTacticalView && TheGameLogic &&
 		    TheGameLogic->isInGame() && GameLogic::isInInteractiveGame(TheGameLogic->getGameMode())) {
-			const Real wantedMax = 370.0f; // was 520: too far out shows the black map edge; 370 matches the best screenshot
+			const Real wantedMax = 440.0f; // 520 showed the black map edge at the sides; 370 was too close; 440 in between
 			if (TheWritableGlobalData->m_maxCameraHeight < wantedMax) {
 				TheWritableGlobalData->m_maxCameraHeight = wantedMax;
 			}
 			TheTacticalView->setCameraHeightAboveGroundLimitsToDefault();
 			s_zoomPatched = true;
+		}
+		// a new match / replay re-applies the limit
+		if (s_zoomPatched && TheGameLogic && !TheGameLogic->isInGame()) {
+			s_zoomPatched = false;
 		}
 	}
 #endif
