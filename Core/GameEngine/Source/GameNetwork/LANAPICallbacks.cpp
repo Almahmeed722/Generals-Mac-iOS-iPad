@@ -284,6 +284,22 @@ void LANAPI::OnGameOptions( UnsignedInt playerIP, Int playerSlot, AsciiString op
 			lanUpdateSlotList();
 			updateGameOptions();
 		}
+#if defined(__APPLE__)
+			// Diagnostics for "cannot press Accept / choose a team": am I in the slot list the host sent?
+			{
+				static int s_slotLog = 0;
+				if (s_slotLog++ < 40)
+				{
+					Int mySlot = -1;
+					for (Int sl = 0; sl < MAX_SLOTS; ++sl)
+						if (m_currentGame->getIP(sl) == m_localIP) { mySlot = sl; break; }
+					fprintf(stderr, "[GX-LAN] host options received: my IP %u.%u.%u.%u, my slot %d, host IP %u.%u.%u.%u\n",
+						(unsigned)((m_localIP >> 24) & 0xFF), (unsigned)((m_localIP >> 16) & 0xFF), (unsigned)((m_localIP >> 8) & 0xFF), (unsigned)(m_localIP & 0xFF),
+						(int)mySlot,
+						(unsigned)((m_currentGame->getIP(0) >> 24) & 0xFF), (unsigned)((m_currentGame->getIP(0) >> 16) & 0xFF), (unsigned)((m_currentGame->getIP(0) >> 8) & 0xFF), (unsigned)(m_currentGame->getIP(0) & 0xFF));
+				}
+			}
+#endif
 		Bool booted = true;
 		for(Int player = 1; player< MAX_SLOTS; player++)
 		{
