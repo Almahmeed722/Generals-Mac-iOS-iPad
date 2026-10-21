@@ -49,6 +49,10 @@
 #include <cstring>
 #include <cstdio>
 #include <unistd.h>   // _exit()
+#include <dirent.h>   // pruning old session logs
+#include <ctime>
+#include <vector>
+#include <algorithm>
 #include <glob.h>     // glob() for Vulkan ICD discovery
 
 // USER INCLUDES (match WinMain.cpp pattern)
@@ -278,7 +282,39 @@ int main(int argc, char* argv[])
 			// Keep the previous session's log: a session that ends in a memory kill
 			// leaves no OS crash report, so the prior log is often the only evidence.
 			snprintf(prevPath, sizeof(prevPath), "%s/Documents/generals-stderr-prev.log", diagHome);
-			rename(diagPath, prevPath);
+			// Every session keeps its own log, named after the time it ended (the old log's last-write time), so a
+			// crash is never overwritten by the next launches. The newest 12 are kept.
+			{
+				struct stat oldSt;
+				if (stat(diagPath, &oldSt) == 0) {
+					struct tm endTm;
+					time_t endTime = oldSt.st_mtime;
+					localtime_r(&endTime, &endTm);
+					char stampPath[1100];
+					snprintf(stampPath, sizeof(stampPath), "%s/Documents/generals-stderr-%04d%02d%02d-%02d%02d%02d.log", diagHome,
+					         endTm.tm_year + 1900, endTm.tm_mon + 1, endTm.tm_mday, endTm.tm_hour, endTm.tm_min, endTm.tm_sec);
+					rename(diagPath, stampPath);
+				}
+				char docsDir[1024];
+				snprintf(docsDir, sizeof(docsDir), "%s/Documents", diagHome);
+				if (DIR *dir = opendir(docsDir)) {
+					std::vector<std::string> sessionLogs;
+					while (struct dirent *ent = readdir(dir)) {
+						if (strncmp(ent->d_name, "generals-stderr-2", 17) == 0) {
+							sessionLogs.push_back(ent->d_name);
+						}
+					}
+					closedir(dir);
+					std::sort(sessionLogs.begin(), sessionLogs.end());
+					while (sessionLogs.size() > 12) {
+						char victim[1100];
+						snprintf(victim, sizeof(victim), "%s/%s", docsDir, sessionLogs.front().c_str());
+						unlink(victim);
+						sessionLogs.erase(sessionLogs.begin());
+					}
+				}
+			}
+			(void)prevPath;
 			// Filtered + capped sink instead of a raw freopen: per-frame debug spam
 			// (upstream [GX-ISSUE144] font traces, [INI] loader traces, residual DXVK
 			// warns) is dropped, and the file stops growing at 8 MB so a marathon
