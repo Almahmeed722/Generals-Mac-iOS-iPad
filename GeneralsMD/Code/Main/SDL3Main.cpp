@@ -507,10 +507,6 @@ int main(int argc, char* argv[])
 		// SDL3GameEngine.cpp; SDL's automatic touch->mouse synthesis would
 		// double-deliver finger 1 and fight the two-finger pan logic.
 		SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
-		// Fast tapping / swiping near the bottom edge (the control bar) can trigger the iPad's "go home" gesture, which
-		// leaves the game and gets it closed in the background. Hide the home indicator and defer the edge gestures,
-		// so leaving the game needs a deliberate second swipe.
-		SDL_SetHint(SDL_HINT_IOS_HIDE_HOME_INDICATOR, "2");
 #endif
 		if (!SDL_InitSubSystem(SDL_INIT_VIDEO | SDL_INIT_AUDIO)) {
 			fprintf(stderr, "FATAL: Failed to initialize SDL3: %s\n", SDL_GetError());
